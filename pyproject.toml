@@ -15,6 +15,7 @@ dependencies = [
 url = "https://pypi.tuna.tsinghua.edu.cn/simple"
 default = true
 
-#[[tool.uv.index]]
-#url = "https://download.pytorch.org/whl/cu128"
-#priority = "supplemental"
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
