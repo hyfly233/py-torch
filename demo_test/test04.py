@@ -16,9 +16,9 @@ from translation_model import Encoder, Decoder, Seq2Seq
 logging.set_verbosity_info()
 
 # 2. 自定义缓存目录（默认是 ~/.cache/huggingface/datasets）
-cache_dir = os.path.expanduser("~/.cache/huggingface/datasets")
+# cache_dir = os.path.expanduser("~/.cache/huggingface/datasets")
 download_config = DownloadConfig(
-    cache_dir=cache_dir,  # 改成你想要的路径
+    # cache_dir=cache_dir,  # 改成你想要的路径
     resume_download=True,
 )
 
@@ -26,7 +26,7 @@ raw_train = load_dataset(
     "wmt14",
     "de-en",
     split="train",  # 只要 train
-    cache_dir=download_config.cache_dir,
+    # cache_dir=download_config.cache_dir,
     download_config=download_config,
 )
 
@@ -62,7 +62,7 @@ def simple_tokenizer(text):
 
 # 真实数据集
 # max_size=20000
-max_size = 5
+max_size = 50
 src_vocab = build_vocab(src_sentences, simple_tokenizer, min_freq=5, max_size=max_size)
 trg_vocab = build_vocab(trg_sentences, simple_tokenizer, min_freq=5, max_size=max_size)
 
