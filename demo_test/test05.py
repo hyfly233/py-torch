@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 class Config:
     """配置类，集中管理所有超参数"""
+
     # 数据配置
     DATASET_NAME = "wmt14"
     LANGUAGE_PAIR = "de-en"
@@ -65,7 +66,7 @@ class TranslationTrainer:
         """智能设备选择"""
         if torch.cuda.is_available():
             return torch.device("cuda")
-        elif hasattr(torch, 'mps') and torch.mps.is_available():
+        elif hasattr(torch, "mps") and torch.mps.is_available():
             return torch.device("mps")
         else:
             return torch.device("cpu")
@@ -78,7 +79,7 @@ class TranslationTrainer:
         cache_file = self.config.CACHE_DIR / "processed_data.pkl"
         if cache_file.exists():
             logger.info("Loading from cache...")
-            with open(cache_file, 'rb') as f:
+            with open(cache_file, "rb") as f:
                 return pickle.load(f)
 
         # 设置HuggingFace日志
@@ -104,8 +105,10 @@ class TranslationTrainer:
         # 过滤过长的句子
         filtered_data = []
         for src, trg in zip(src_sentences, trg_sentences):
-            if (len(src.split()) <= self.config.MAX_SEQUENCE_LENGTH and
-                    len(trg.split()) <= self.config.MAX_SEQUENCE_LENGTH):
+            if (
+                len(src.split()) <= self.config.MAX_SEQUENCE_LENGTH
+                and len(trg.split()) <= self.config.MAX_SEQUENCE_LENGTH
+            ):
                 filtered_data.append((src, trg))
 
         src_sentences, trg_sentences = zip(*filtered_data)
@@ -114,7 +117,7 @@ class TranslationTrainer:
         logger.info(f"Loaded {len(src_sentences)} sentence pairs")
 
         # 缓存处理后的数据
-        with open(cache_file, 'wb') as f:
+        with open(cache_file, "wb") as f:
             pickle.dump((src_sentences, trg_sentences), f)
 
         return src_sentences, trg_sentences
@@ -123,7 +126,9 @@ class TranslationTrainer:
         """简单的分词器"""
         return text.lower().strip().split()
 
-    def build_vocab(self, sentences: List[str], min_freq: int = None, max_size: int = None) -> Dict[str, int]:
+    def build_vocab(
+        self, sentences: List[str], min_freq: int = None, max_size: int = None
+    ) -> Dict[str, int]:
         """构建词表，支持缓存"""
         if min_freq is None:
             min_freq = self.config.MIN_FREQ
@@ -151,27 +156,32 @@ class TranslationTrainer:
             self.config.ENC_EMB_DIM,
             self.config.HID_DIM,
             self.config.N_LAYERS,
-            self.config.ENC_DROPOUT
+            self.config.ENC_DROPOUT,
         )
         dec = Decoder(
             trg_vocab_size,
             self.config.DEC_EMB_DIM,
             self.config.HID_DIM,
             self.config.N_LAYERS,
-            self.config.DEC_DROPOUT
+            self.config.DEC_DROPOUT,
         )
         model = Seq2Seq(enc, dec, self.device).to(self.device)
 
         # 参数初始化
         def init_weights(m):
-            if hasattr(m, 'weight') and m.weight.dim() > 1:
+            if hasattr(m, "weight") and m.weight.dim() > 1:
                 nn.init.xavier_uniform_(m.weight.data)
 
         model.apply(init_weights)
         return model
 
-    def train_epoch(self, model: nn.Module, dataloader: DataLoader,
-                    optimizer: optim.Optimizer, criterion: nn.Module) -> float:
+    def train_epoch(
+        self,
+        model: nn.Module,
+        dataloader: DataLoader,
+        optimizer: optim.Optimizer,
+        criterion: nn.Module,
+    ) -> float:
         """训练一个epoch"""
         model.train()
         epoch_loss = 0
@@ -192,25 +202,34 @@ class TranslationTrainer:
             loss.backward()
 
             # 梯度裁剪
-            torch.nn.utils.clip_grad_norm_(model.parameters(), self.config.GRADIENT_CLIP)
+            torch.nn.utils.clip_grad_norm_(
+                model.parameters(), self.config.GRADIENT_CLIP
+            )
 
             optimizer.step()
             epoch_loss += loss.item()
 
             # 更新进度条
-            progress_bar.set_postfix({'loss': f'{loss.item():.4f}'})
+            progress_bar.set_postfix({"loss": f"{loss.item():.4f}"})
 
         return epoch_loss / len(dataloader)
 
-    def save_checkpoint(self, model: nn.Module, optimizer: optim.Optimizer,
-                        epoch: int, loss: float, src_vocab: Dict, trg_vocab: Dict):
+    def save_checkpoint(
+        self,
+        model: nn.Module,
+        optimizer: optim.Optimizer,
+        epoch: int,
+        loss: float,
+        src_vocab: Dict,
+        trg_vocab: Dict,
+    ):
         """保存检查点"""
         checkpoint = {
-            'epoch': epoch,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'loss': loss,
-            'config': self.config.__dict__,
+            "epoch": epoch,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "loss": loss,
+            "config": self.config.__dict__,
         }
 
         # 保存模型检查点
@@ -218,10 +237,10 @@ class TranslationTrainer:
         torch.save(checkpoint, checkpoint_path)
 
         # 保存词表
-        with open(self.config.SAVE_DIR / "src_vocab.json", 'w', encoding='utf-8') as f:
+        with open(self.config.SAVE_DIR / "src_vocab.json", "w", encoding="utf-8") as f:
             json.dump(src_vocab, f, ensure_ascii=False, indent=2)
 
-        with open(self.config.SAVE_DIR / "trg_vocab.json", 'w', encoding='utf-8') as f:
+        with open(self.config.SAVE_DIR / "trg_vocab.json", "w", encoding="utf-8") as f:
             json.dump(trg_vocab, f, ensure_ascii=False, indent=2)
 
         logger.info(f"Checkpoint saved: {checkpoint_path}")
@@ -247,7 +266,7 @@ class TranslationTrainer:
             shuffle=True,
             collate_fn=collate_fn,
             num_workers=2,
-            pin_memory=True if self.device.type == 'cuda' else False
+            pin_memory=True if self.device.type == "cuda" else False,
         )
 
         # 创建模型
@@ -258,18 +277,18 @@ class TranslationTrainer:
         optimizer = optim.AdamW(
             model.parameters(),
             lr=self.config.LEARNING_RATE,
-            weight_decay=self.config.WEIGHT_DECAY
+            weight_decay=self.config.WEIGHT_DECAY,
         )
 
         # 学习率调度器
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode='min', factor=0.5, patience=2
+            optimizer, mode="min", factor=0.5, patience=2
         )
 
         criterion = nn.CrossEntropyLoss(ignore_index=src_vocab["<pad>"])
 
         logger.info("Starting training...")
-        best_loss = float('inf')
+        best_loss = float("inf")
 
         # 训练循环
         for epoch in range(self.config.N_EPOCHS):
@@ -279,18 +298,20 @@ class TranslationTrainer:
             avg_loss = self.train_epoch(model, dataloader, optimizer, criterion)
 
             # 获取当前学习率
-            current_lr = optimizer.param_groups[0]['lr']
+            current_lr = optimizer.param_groups[0]["lr"]
 
             # 学习率调度
             old_lr = current_lr
             scheduler.step(avg_loss)
-            new_lr = optimizer.param_groups[0]['lr']
+            new_lr = optimizer.param_groups[0]["lr"]
 
             # 手动记录学习率变化
             if old_lr != new_lr:
                 logger.info(f"Learning rate reduced from {old_lr:.2e} to {new_lr:.2e}")
 
-            logger.info(f"Epoch {epoch + 1} completed. Average Loss: {avg_loss:.4f}, LR: {new_lr:.2e}")
+            logger.info(
+                f"Epoch {epoch + 1} completed. Average Loss: {avg_loss:.4f}, LR: {new_lr:.2e}"
+            )
 
         logger.info("Training completed!")
 
