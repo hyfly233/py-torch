@@ -1,4 +1,3 @@
-import os
 import pprint
 from collections import Counter
 
@@ -32,6 +31,9 @@ raw_train = load_dataset(
 
 # 4. 查看缓存下的具体文件
 pprint.pprint(raw_train.cache_files)
+
+# 只取前1000条数据
+raw_train = raw_train.select(range(1000))
 
 src_sentences = [ex["translation"]["en"] for ex in raw_train]
 trg_sentences = [ex["translation"]["de"] for ex in raw_train]
