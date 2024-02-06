@@ -67,6 +67,7 @@ def collate_fn(batch):
     用于 batch 填充
     """
     src_batch, tgt_batch = zip(*batch)
+    # 把不同长度的序列按第一个维度填充
     src_batch = pad_sequence(src_batch, padding_value=0)  # 假设 <pad>=0
     tgt_batch = pad_sequence(tgt_batch, padding_value=0)
     return src_batch, tgt_batch
