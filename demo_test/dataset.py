@@ -1,10 +1,10 @@
+import jieba
 import spacy
 import torch
 from torch.nn.utils.rnn import pad_sequence
 
 # 加载 spacy 的英语和德语模型
 spacy_en = spacy.load("en_core_web_sm")
-spacy_de = spacy.load("de_core_news_sm")
 
 
 def tokenize_en(text):
@@ -14,8 +14,9 @@ def tokenize_en(text):
     return [tok.text.lower() for tok in spacy_en(text)]
 
 
-def tokenize_de(text):
-    return [tok.text.lower() for tok in spacy_de(text)]
+def tokenize_zh(text):
+    # 使用 jieba 做中文分词
+    return jieba.lcut(text)
 
 
 class SimpleDataset(torch.utils.data.Dataset):
@@ -55,7 +56,7 @@ class SimpleDataset(torch.utils.data.Dataset):
         ]
         tgt = [
             self.tgt_vocab.get(w, self.tgt_vocab["<unk>"])
-            for w in tokenize_de(self.tgt_sents[idx])
+            for w in tokenize_zh(self.tgt_sents[idx])
         ]
         return torch.tensor(
             [self.src_vocab["<bos>"]] + src + [self.src_vocab["<eos>"]]
@@ -67,7 +68,7 @@ def collate_fn(batch):
     用于 batch 填充
     """
     src_batch, tgt_batch = zip(*batch)
-    # 把不同长度的序列按第一个维度填充
-    src_batch = pad_sequence(src_batch, padding_value=0)  # 假设 <pad>=0
-    tgt_batch = pad_sequence(tgt_batch, padding_value=0)
+    # 把不同长度的序列按第一个维度填充，假设 <pad> 的索引为 0；返回形状为 (batch, seq_len)
+    src_batch = pad_sequence(src_batch, padding_value=0, batch_first=True)
+    tgt_batch = pad_sequence(tgt_batch, padding_value=0, batch_first=True)
     return src_batch, tgt_batch
