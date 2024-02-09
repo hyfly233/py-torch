@@ -4,15 +4,17 @@ from torch.utils.data import DataLoader
 from torchvision import datasets
 from torchvision.transforms import ToTensor
 
-# Download training data from open datasets.
+print("开始下载数据集...")
+
+# 下载训练数据
 training_data = datasets.FashionMNIST(
     root="data",
     train=True,
     download=True,
-    transform=ToTensor(),
+    transform=ToTensor(),  # 图像通过 ToTensor() 转为张量
 )
 
-# Download test data from open datasets.
+# 下载测试数据
 test_data = datasets.FashionMNIST(
     root="data",
     train=False,
@@ -20,10 +22,12 @@ test_data = datasets.FashionMNIST(
     transform=ToTensor(),
 )
 
+print("开始创建数据加载器...")
+
 batch_size = 64
 
-# Create data loaders.
-train_dataloader = DataLoader(training_data, batch_size=batch_size)
+# 创建数据加载器
+train_dataloader = DataLoader(training_data, batch_size=batch_size)  # 批大小 64，训练集未设置 shuffle
 test_dataloader = DataLoader(test_data, batch_size=batch_size)
 
 for X, y in test_dataloader:
@@ -36,14 +40,15 @@ device = (
     if torch.accelerator.is_available()
     else "cpu"
 )
-print(f"Using {device} device")
+print(f"使用的设备: {device}")
 
 
-# Define model
+# 定义模型
 class NeuralNetwork(nn.Module):
     def __init__(self):
         super().__init__()
         self.flatten = nn.Flatten()
+        # 三层线性层与 ReLU 激活函数
         self.linear_relu_stack = nn.Sequential(
             nn.Linear(28 * 28, 512),
             nn.ReLU(),
@@ -53,6 +58,11 @@ class NeuralNetwork(nn.Module):
         )
 
     def forward(self, x):
+        """
+        先 Flatten() 把输入张量的若干维度合并（展平）为一个维度，通常会保持批次维（batch）不变
+        默认是从 start_dim=1 到最后一维合并，所以对形状 (N, C, H, W) 的输入会变成 (N, C*H*W)
+        再经由三层线性层与 ReLU，输出 10 类 logits（未带 softmax）
+        """
         x = self.flatten(x)
         logits = self.linear_relu_stack(x)
         return logits
@@ -61,21 +71,25 @@ class NeuralNetwork(nn.Module):
 model = NeuralNetwork().to(device)
 print(model)
 
-loss_fn = nn.CrossEntropyLoss()
-optimizer = torch.optim.SGD(model.parameters(), lr=1e-3)
+loss_fn = nn.CrossEntropyLoss()  # 损失函数
+optimizer = torch.optim.SGD(model.parameters(), lr=1e-3)  # SGD 优化器，学习率 0.001
 
 
 def train(dataloader, model, loss_fn, optimizer):
+    """
+    对每个 batch 将数据移到设备，前向、计算损失、反向、调用 optimizer.step()，随后 optimizer.zero_grad() 清梯度。
+    每 100 个 batch 打印一次损失与进度
+    """
     size = len(dataloader.dataset)
     model.train()
     for batch, (X, y) in enumerate(dataloader):
         X, y = X.to(device), y.to(device)
 
-        # Compute prediction error
+        # 计算预测误差
         pred = model(X)
         loss = loss_fn(pred, y)
 
-        # Backpropagation
+        # 反向传播
         loss.backward()
         optimizer.step()
         optimizer.zero_grad()
@@ -86,6 +100,9 @@ def train(dataloader, model, loss_fn, optimizer):
 
 
 def test(dataloader, model, loss_fn):
+    """
+    评估模式、禁梯度，累积损失与正确数，最后打印准确率与平均损失
+    """
     size = len(dataloader.dataset)
     num_batches = len(dataloader)
     model.eval()
