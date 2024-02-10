@@ -27,7 +27,9 @@ print("开始创建数据加载器...")
 batch_size = 64
 
 # 创建数据加载器
-train_dataloader = DataLoader(training_data, batch_size=batch_size)  # 批大小 64，训练集未设置 shuffle
+train_dataloader = DataLoader(
+    training_data, batch_size=batch_size
+)  # 批大小 64，训练集未设置 shuffle
 test_dataloader = DataLoader(test_data, batch_size=batch_size)
 
 for X, y in test_dataloader:
