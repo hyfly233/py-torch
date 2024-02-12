@@ -43,7 +43,10 @@ try:
     trg_sentences = [ex["translation"]["zh"] for ex in raw_train]
 
 except Exception as e:
-    print("Warning: failed to load HF zh-en dataset (falling back to a small synthetic corpus):", e)
+    print(
+        "Warning: failed to load HF zh-en dataset (falling back to a small synthetic corpus):",
+        e,
+    )
     # 备选（离线/快速测试）: 构造一个小的中英对照语料用于 demo
     english_samples = [
         "Hello world",
@@ -138,7 +141,13 @@ dataset = SimpleDataset(src_sentences, trg_sentences, src_vocab, trg_vocab)
 # 启用 shuffle（训练需要），并在 CUDA 时启用 pin_memory
 pin_memory = True if str(device).startswith("cuda") else False
 
-dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, collate_fn=collate_fn, shuffle=True, pin_memory=pin_memory)
+dataloader = DataLoader(
+    dataset,
+    batch_size=BATCH_SIZE,
+    collate_fn=collate_fn,
+    shuffle=True,
+    pin_memory=pin_memory,
+)
 
 # 模型
 enc = Encoder(INPUT_DIM, ENC_EMB_DIM, HID_DIM, N_LAYERS, ENC_DROPOUT)
