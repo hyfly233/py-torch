@@ -5,7 +5,9 @@ from translation_model import Encoder, Decoder, Seq2Seq
 # 1. 加载词表（训练时用 torch.save(src_vocab, 'src_vocab.pth')、torch.save(trg_vocab, 'trg_vocab.pth') 保存）
 src_vocab = torch.load("src_vocab.pth")
 trg_vocab = torch.load("trg_vocab.pth")
-inv_trg_vocab = {idx: tok for tok, idx in trg_vocab.items()}
+inv_trg_vocab = {
+    idx: tok for tok, idx in trg_vocab.items()
+}  # 目标词表的反向映射 id -> token
 
 # 2. 设备
 device = (
@@ -21,14 +23,17 @@ enc = Encoder(INPUT_DIM, 256, 512, 2, 0.5)
 dec = Decoder(OUTPUT_DIM, 256, 512, 2, 0.5)
 model = Seq2Seq(enc, dec, device).to(device)
 model.load_state_dict(torch.load("translation_model.pth", map_location=device))
-model.eval()
+model.eval()  # 切换到评估模式
 
 
 # 4. 定义翻译函数
 def translate(sentence: str, max_len: int = 50) -> str:
-    # 分词并转 id
-    tokens = ["<bos>"] + sentence.lower().split() + ["<eos>"]
-    src_ids = [src_vocab.get(tok, src_vocab["<unk>"]) for tok in tokens]
+    tokens = (
+        ["<bos>"] + sentence.lower().split() + ["<eos>"]
+    )  # 把输入小写并用空格切分，前后加入 <bos> 和 <eos> 标记
+    src_ids = [
+        src_vocab.get(tok, src_vocab["<unk>"]) for tok in tokens
+    ]  # 把 token 转为 id（未知 token 用 <unk>）。生成形状为 [seq_len, 1]的src_tensor
     src_tensor = torch.LongTensor(src_ids).unsqueeze(1).to(device)  # [seq_len, 1]
 
     # 编码
@@ -52,5 +57,5 @@ def translate(sentence: str, max_len: int = 50) -> str:
 
 
 # 5. 测试
-print(translate("Hello"))
-# print(translate("Hello, how are you?"))
+# print(translate("Hello"))
+print(translate("Hello, how are you?"))
