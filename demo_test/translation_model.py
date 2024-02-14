@@ -4,7 +4,15 @@ import torch
 import torch.nn as nn
 
 
+# 基于 LSTM 的序列到序列（seq2seq）模型
+
+
 class Encoder(nn.Module):
+    """
+    把源序列映射到 LSTM 的隐状态
+    nn.Embedding -> dropout -> nn.LSTM
+    """
+
     def __init__(self, input_dim, emb_dim, hid_dim, n_layers, dropout):
         super().__init__()
         self.embedding = nn.Embedding(input_dim, emb_dim)
@@ -12,13 +20,21 @@ class Encoder(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, src):
-        # src: [src_len, batch_size]
+        # src 形状 [src_len, batch_size]
         embedded = self.dropout(self.embedding(src))
         outputs, (hidden, cell) = self.rnn(embedded)
-        return hidden, cell
+        return (
+            hidden,
+            cell,
+        )  # hidden、cell 的形状为 [n_layers, batch_size, hid_dim]，可直接用于 decoder 的初始状态
 
 
 class Decoder(nn.Module):
+    """
+    给定上一步的 token（或目标 token），输出下一个时间步的词分布
+    把单步输入 token 用 embedding 编码（先 unsqueeze(0) 变成 [1, batch]），然后经过 dropout、LSTM，最后经 fc_out 映射到词表维度
+    """
+
     def __init__(self, output_dim, emb_dim, hid_dim, n_layers, dropout):
         super().__init__()
         self.output_dim = output_dim
@@ -33,10 +49,22 @@ class Decoder(nn.Module):
         embedded = self.dropout(self.embedding(input))
         output, (hidden, cell) = self.rnn(embedded, (hidden, cell))
         prediction = self.fc_out(output.squeeze(0))
-        return prediction, hidden, cell
+        return (
+            prediction,
+            hidden,
+            cell,
+        )  # prediction（[batch_size, output_dim] logits）、hidden、cell
 
 
 class Seq2Seq(nn.Module):
+    """
+    在训练时按 teacher forcing 比例逐步解码并收集所有时间步的输出 logits
+    用 encoder 得到 hidden, cell。
+    用 trg[0, :]（通常是 <sos>）作为初始 decoder 输入。
+    对每个时间步 t 从 1 到 trg_len-1：调用 decoder，得到 output（[batch, trg_vocab_size]），写入 outputs[t]，根据 teacher forcing 决定下一步输入是 trg[t] 还是 top1 = output.argmax(1)。
+    返回 outputs，形状 [trg_len, batch, trg_vocab_size]（注意 outputs[0] 保持为初始的全零）
+    """
+
     def __init__(self, encoder, decoder, device):
         super().__init__()
         self.encoder = encoder
