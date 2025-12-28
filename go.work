@@ -1,0 +1,12 @@
+// go.work 统一编排 kk-infra 各 Go 模块
+go 1.26
+
+use (
+	./lib
+	./services/controlplane
+	./services/gateway
+	./services/inference
+	./services/k8sadapter
+	./services/modelregistry
+	./services/observability
+)
