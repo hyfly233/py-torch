@@ -1,0 +1,54 @@
+// Package domain 定义 Carrot AI Infra 核心领域模型。
+// 领域逻辑不依赖任何外部框架与 Kubernetes SDK，保证可独立测试。
+package domain
+
+import "time"
+
+// 模型运行时类型（MVP 仅支持 vLLM）
+const (
+	RuntimeVLLM = "vLLM"
+)
+
+// 模型版本状态
+const (
+	ModelStatusRegistered   = "REGISTERED"   // 已注册
+	ModelStatusValidating   = "VALIDATING"   // 校验中
+	ModelStatusValidated    = "VALIDATED"    // 校验通过，可部署
+	ModelStatusUnavailable  = "UNAVAILABLE"  // 不可部署
+)
+
+// Model 模型主信息
+type Model struct {
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`        // 模型名称，全局唯一
+	Description string    `json:"description"` // 模型说明
+	CreatedAt   time.Time `json:"createdAt"`
+	UpdatedAt   time.Time `json:"updatedAt"`
+}
+
+// ModelVersion 模型版本：一个模型可有多个版本，版本是部署的最小引用单元
+type ModelVersion struct {
+	ID            string    `json:"id"`
+	ModelID       string    `json:"modelId"`   // 所属模型
+	ModelName     string    `json:"modelName"` // 冗余模型名（modelregistry 填充）
+	Version       string    `json:"version"`   // 版本号，模型内唯一
+	ArtifactURI   string    `json:"artifactUri"`   // 权重地址（S3/MinIO/NFS），不写入日志
+	Runtime       string    `json:"runtime"`       // 运行时，如 vLLM
+	GPUType       string    `json:"gpuType"`       // 所需 GPU 型号，如 A100
+	GPUCount      int32     `json:"gpuCount"`      // 单副本所需 GPU 数
+	MemoryMB      int64     `json:"memoryMB"`      // 单副本所需内存
+	ContextLength int32     `json:"contextLength"` // 最大上下文长度
+	Status        string    `json:"status"`        // 可部署性状态
+	CreatedAt     time.Time `json:"createdAt"`
+	UpdatedAt     time.Time `json:"updatedAt"`
+}
+
+// Deployable 校验模型版本是否可部署
+func (v *ModelVersion) Deployable() bool {
+	return v != nil &&
+		v.Status == ModelStatusValidated &&
+		v.Runtime == RuntimeVLLM &&
+		v.ArtifactURI != "" &&
+		v.GPUType != "" &&
+		v.GPUCount > 0
+}
