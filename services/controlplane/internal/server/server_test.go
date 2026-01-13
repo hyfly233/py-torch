@@ -1,0 +1,239 @@
+package server
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"kk-infra/lib/apitypes"
+	"kk-infra/lib/domain"
+	"kk-infra/services/controlplane/internal/biz"
+	"kk-infra/services/controlplane/internal/clients"
+	"kk-infra/services/controlplane/internal/data"
+)
+
+// mockModelClient 模拟 modelregistry
+type mockModelClient struct{}
+
+func (m *mockModelClient) GetVersion(ctx context.Context, versionID string) (*domain.ModelVersion, error) {
+	return &domain.ModelVersion{
+		ID:          versionID,
+		ModelID:     "m1",
+		ModelName:   "qwen",
+		Version:     "7b",
+		ArtifactURI: "s3://models/qwen-7b",
+		Runtime:     domain.RuntimeVLLM,
+		GPUType:     "A100",
+		GPUCount:    1,
+		MemoryMB:    32768,
+		Status:      domain.ModelStatusValidated,
+	}, nil
+}
+
+// mockKubeClient 模拟 k8sadapter：简单内存部署
+type mockKubeClient struct {
+	deploys map[string]int32 // name → ready 数
+}
+
+func newMockKube() *mockKubeClient {
+	return &mockKubeClient{deploys: make(map[string]int32)}
+}
+
+func (m *mockKubeClient) ListGPUs(ctx context.Context) ([]domain.GPUResource, error) {
+	used := int32(0)
+	for _, r := range m.deploys {
+		used += r
+	}
+	return []domain.GPUResource{
+		{NodeName: "gpu-001", GPUType: "A100", Total: 8, Allocatable: 8, Used: used, MemoryMB: 81920, Utilization: 50, Health: domain.GPUHealthHealthy},
+	}, nil
+}
+
+func (m *mockKubeClient) CreateDeployment(ctx context.Context, spec *clients.CreateDeploymentSpec) (*clients.K8sDeploymentResult, error) {
+	m.deploys[spec.Name] = spec.Replicas
+	return &clients.K8sDeploymentResult{
+		DeploymentID: spec.DeploymentID,
+		Status:       &clients.K8sDeploymentStatus{Replicas: spec.Replicas, ReadyReplicas: spec.Replicas, Condition: "Available"},
+		Endpoint:     spec.Name + ".tenant-default.svc.cluster.local",
+	}, nil
+}
+
+func (m *mockKubeClient) GetDeployment(ctx context.Context, name, namespace string) (*clients.K8sDeploymentResult, error) {
+	r, ok := m.deploys[name]
+	if !ok {
+		return nil, data.ErrNotFound
+	}
+	return &clients.K8sDeploymentResult{
+		DeploymentID: name,
+		Status:       &clients.K8sDeploymentStatus{Replicas: r, ReadyReplicas: r, Condition: "Available"},
+		Endpoint:     name + ".svc.cluster.local",
+	}, nil
+}
+
+func (m *mockKubeClient) ScaleDeployment(ctx context.Context, name, namespace string, replicas int32) (*clients.K8sDeploymentResult, error) {
+	m.deploys[name] = replicas
+	return &clients.K8sDeploymentResult{
+		DeploymentID: name,
+		Status:       &clients.K8sDeploymentStatus{Replicas: replicas, ReadyReplicas: replicas, Condition: "Available"},
+	}, nil
+}
+
+func (m *mockKubeClient) DeleteDeployment(ctx context.Context, name, namespace string) error {
+	delete(m.deploys, name)
+	return nil
+}
+
+func newTestServer(t *testing.T) (http.Handler, data.DeploymentRepository) {
+	t.Helper()
+	repo := data.NewMemoryDeploymentRepository()
+	models := &mockModelClient{}
+	kube := newMockKube()
+	deployUse := biz.NewDeploymentUseCase(repo, models, kube)
+	resUse := biz.NewResourceUseCase(kube)
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	return NewServer(deployUse, resUse, repo, logger).Handler(), repo
+}
+
+func doJSON(t *testing.T, h http.Handler, method, path string, body interface{}) (*apitypes.Response, int) {
+	t.Helper()
+	var buf bytes.Buffer
+	if body != nil {
+		_ = json.NewEncoder(&buf).Encode(body)
+	}
+	req := httptest.NewRequest(method, path, &buf)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	var resp apitypes.Response
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	return &resp, rec.Code
+}
+
+// 完整流程：创建 → 状态推进 → 扩容 → 删除
+func TestDeploymentLifecycle(t *testing.T) {
+	h, _ := newTestServer(t)
+
+	// 1. 创建部署
+	req := apitypes.CreateDeploymentRequest{
+		IdempotencyKey: "deploy-001",
+		Name:           "qwen-demo",
+		ModelVersionID: "v1",
+		Replicas:       1,
+	}
+	resp, code := doJSON(t, h, http.MethodPost, "/api/v1/deployments", req)
+	if code != http.StatusOK {
+		t.Fatalf("创建部署失败: %d %s", code, resp.Message)
+	}
+	d, ok := resp.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("响应异常: %+v", resp.Data)
+	}
+	// 异步提交流程很快，创建后状态应为非终态（NEW/VALIDATING/SUBMITTING/STARTING）
+	initial := d["status"].(string)
+	switch initial {
+	case "NEW", "VALIDATING", "SUBMITTING", "STARTING":
+	default:
+		t.Fatalf("创建后状态应非终态: %v", initial)
+	}
+	id := d["id"].(string)
+
+	// 2. 幂等创建（同 IdempotencyKey）
+	resp2, code := doJSON(t, h, http.MethodPost, "/api/v1/deployments", req)
+	if code != http.StatusOK {
+		t.Fatalf("幂等创建失败: %d", code)
+	}
+	if id2, ok := resp2.Data.(map[string]interface{})["id"].(string); ok && id2 != id {
+		t.Fatalf("幂等创建应返回同一部署: %s != %s", id2, id)
+	}
+
+	// 3. 查询（异步提交流程会推进状态）
+	deadline := time.Now().Add(5 * time.Second)
+	var status string
+	for {
+		resp, code = doJSON(t, h, http.MethodGet, "/api/v1/deployments/"+id, nil)
+		if code != http.StatusOK {
+			t.Fatalf("查询失败: %d", code)
+		}
+		if d, ok := resp.Data.(map[string]interface{}); ok {
+			status = d["status"].(string)
+			if status == "RUNNING" {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("部署未进入 RUNNING: %s", status)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if status != "RUNNING" {
+		t.Fatalf("最终状态应为 RUNNING: %s", status)
+	}
+
+	// 4. 事件记录
+	if d, ok := resp.Data.(map[string]interface{}); ok {
+		if evs, ok := d["events"].([]interface{}); ok && len(evs) == 0 {
+			t.Error("应有状态事件记录")
+		}
+	}
+
+	// 5. 扩容
+	scaleReq := apitypes.ScaleDeploymentRequest{Replicas: 2}
+	resp, code = doJSON(t, h, http.MethodPost, "/api/v1/deployments/"+id+"/scale", scaleReq)
+	if code != http.StatusOK {
+		t.Fatalf("扩容失败: %d %s", code, resp.Message)
+	}
+	if d, ok := resp.Data.(map[string]interface{}); ok {
+		if int32(d["replicas"].(float64)) != 2 {
+			t.Fatalf("扩容后副本数错误: %v", d["replicas"])
+		}
+		if d["status"] != "RUNNING" {
+			t.Fatalf("扩容后状态应为 RUNNING: %v", d["status"])
+		}
+	}
+
+	// 6. 删除
+	resp, code = doJSON(t, h, http.MethodDelete, "/api/v1/deployments/"+id, nil)
+	if code != http.StatusOK {
+		t.Fatalf("删除失败: %d %s", code, resp.Message)
+	}
+
+	// 7. 幂等删除
+	resp, code = doJSON(t, h, http.MethodDelete, "/api/v1/deployments/"+id, nil)
+	if code != http.StatusOK {
+		t.Fatalf("幂等删除失败: %d %s", code, resp.Message)
+	}
+}
+
+// GPU 资源查询
+func TestGPUResources(t *testing.T) {
+	h, _ := newTestServer(t)
+	resp, code := doJSON(t, h, http.MethodGet, "/api/v1/resources/gpus", nil)
+	if code != http.StatusOK {
+		t.Fatalf("查询 GPU 失败: %d", code)
+	}
+	d, ok := resp.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("响应异常: %+v", resp.Data)
+	}
+	summary, ok := d["summary"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("缺少 summary: %+v", d)
+	}
+	if int32(summary["totalGpu"].(float64)) != 8 {
+		t.Fatalf("GPU 总量错误: %v", summary["totalGpu"])
+	}
+}
+
+// 不存在的部署查询 → 404
+func TestDeploymentNotFound(t *testing.T) {
+	h, _ := newTestServer(t)
+	_, code := doJSON(t, h, http.MethodGet, "/api/v1/deployments/nonexist", nil)
+	if code != http.StatusNotFound {
+		t.Fatalf("不存在部署应返回 404: %d", code)
+	}
+}
