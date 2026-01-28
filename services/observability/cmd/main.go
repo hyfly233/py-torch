@@ -1,0 +1,76 @@
+// observability 可观测性服务入口。
+// 提供请求指标与 GPU 利用率的内存聚合与查询 API。
+package main
+
+import (
+	"context"
+	"flag"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"kk-infra/lib/apitypes"
+	"kk-infra/services/observability/internal/collector"
+	"kk-infra/services/observability/internal/metrics"
+	"kk-infra/services/observability/internal/server"
+)
+
+func main() {
+	addr := flag.String("addr", ":8084", "监听地址")
+	retention := flag.Duration("retention", 2*time.Hour, "指标保留窗口")
+	controlplaneURL := flag.String("controlplane-url", "", "controlplane 地址（如 http://localhost:8080），配置后启用 GPU 指标采集")
+	flag.Parse()
+
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+
+	store := metrics.NewStore(*retention)
+	srv := server.NewServer(store, logger)
+
+	// GPU 指标采集：定期从 controlplane 拉取 GPU 资源状态
+	if *controlplaneURL != "" {
+		col := collector.NewGPUCollector(*controlplaneURL+"/api/v1/resources/gpus", logger, 15*time.Second)
+		col.OnGPU = func(view apitypes.GPUResourcesView) {
+			for _, n := range view.Nodes {
+				store.RecordGPU(metrics.GPUSample{
+					Ts:          time.Now(),
+					NodeName:    n.NodeName,
+					GPUType:     n.GPUType,
+					Utilization: n.Utilization,
+					Used:        n.Used,
+					Total:       n.Total,
+				})
+			}
+		}
+		collectorCtx, collectorStop := context.WithCancel(context.Background())
+		go col.Run(collectorCtx)
+		defer collectorStop()
+		logger.Info("GPU 指标采集已启用", "controlplane", *controlplaneURL)
+	}
+
+	httpSrv := &http.Server{
+		Addr:              *addr,
+		Handler:           srv.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	go func() {
+		logger.Info("HTTP 服务监听", "addr", *addr, "retention", retention.String())
+		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("HTTP 服务异常退出", "err", err)
+			os.Exit(1)
+		}
+	}()
+
+	<-ctx.Done()
+	logger.Info("收到退出信号，开始优雅关闭")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_ = httpSrv.Shutdown(shutdownCtx)
+	logger.Info("observability 已退出")
+}
