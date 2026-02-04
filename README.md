@@ -2,7 +2,8 @@
 
 基于 Kubernetes 的分布式 AI 推理基础设施平台（Go 多模块微服务）。面向企业研发与平台运维团队，将底层 GPU 资源转化为可直接消费的模型服务：选择模型 → 配置规格 → 部署服务 → 获得 OpenAI 兼容 API → 查看性能指标 → 扩缩容/下线。
 
-> 设计文档：`docs/PRD.md`、`docs/AI-INFRA-PLAN.md`、`docs/ARCHITECTURE.md`、`docs/INTERACTION-PROTOTYPE.md`
+> 当前执行文档：`docs/PRD-V2.md`、`docs/ROADMAP-V2.md`、`docs/ARCHITECTURE-V2.md`、`docs/INTERACTION-PROTOTYPE-V2.md`
+> 历史基线：`docs/PRD.md`、`docs/AI-INFRA-PLAN.md`、`docs/ARCHITECTURE.md`、`docs/INTERACTION-PROTOTYPE.md`
 > 任务清单：`TODO.md`
 
 ---

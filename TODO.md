@@ -1,6 +1,7 @@
 # kk-infra — Carrot AI Infra 分布式微服务平台 TODO
 
 > 依据：`docs/PRD.md`、`docs/AI-INFRA-PLAN.md`、`docs/ARCHITECTURE.md`、`docs/INTERACTION-PROTOTYPE.md`
+> 当前路线与执行基线：`docs/ROADMAP-V2.md`、`docs/PRD-V2.md`、`docs/ARCHITECTURE-V2.md`、`docs/INTERACTION-PROTOTYPE-V2.md`
 > 目标：从零搭建一个基于 Kubernetes 的 AI 推理基础设施平台，Go 多模块 workspace（`go.work`），本地可用 Fake K8s 跑通 MVP 闭环。
 > 工具链：Go 1.26.5（PATH 默认 1.20.4，必须用 `/opt/homebrew/bin/go`）。
 
