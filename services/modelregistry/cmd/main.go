@@ -1,4 +1,5 @@
-// modelregistry 模型注册中心服务入口
+// modelregistry 模型注册中心服务入口。
+// 存储支持内存（--storage=memory，默认）或 Postgres（--storage=postgres）。
 package main
 
 import (
@@ -11,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"kk-infra/lib/store"
 	"kk-infra/services/modelregistry/internal/biz"
 	"kk-infra/services/modelregistry/internal/data"
 	"kk-infra/services/modelregistry/internal/server"
@@ -18,12 +20,30 @@ import (
 
 func main() {
 	addr := flag.String("addr", ":8081", "监听地址")
+	storage := flag.String("storage", "memory", "存储后端: memory | postgres")
 	flag.Parse()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	logger.Info("modelregistry 启动", "addr", *addr)
+	logger.Info("modelregistry 启动", "addr", *addr, "storage", *storage)
 
-	repo := data.NewMemoryRepository()
+	var repo data.Repository
+	if *storage == "postgres" {
+		db, err := store.Open(store.DefaultConfig())
+		if err != nil {
+			logger.Error("连接 Postgres 失败", "err", err)
+			os.Exit(1)
+		}
+		if err := store.MigrateAll(db); err != nil {
+			logger.Error("执行 migration 失败", "err", err)
+			os.Exit(1)
+		}
+		repo = data.NewPostgresRepository(db)
+		logger.Info("使用 Postgres 存储", "db", store.DefaultConfig().DBName)
+	} else {
+		repo = data.NewMemoryRepository()
+		logger.Info("使用内存存储")
+	}
+
 	registry := biz.NewRegistry(repo)
 	srv := server.NewServer(registry, logger)
 
@@ -33,7 +53,6 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	// 优雅关闭
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 

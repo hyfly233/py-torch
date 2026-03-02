@@ -2,6 +2,8 @@
 package biz
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"time"
 
 	"kk-infra/lib/apitypes"
@@ -20,6 +22,13 @@ func NewRegistry(repo data.Repository) *Registry {
 	return &Registry{repo: repo}
 }
 
+// newID 生成全局唯一 ID（crypto/rand，不依赖外部库）
+func newID(prefix string) string {
+	b := make([]byte, 10)
+	_, _ = rand.Read(b)
+	return prefix + "-" + hex.EncodeToString(b)
+}
+
 // CreateModel 注册模型
 func (r *Registry) CreateModel(req *apitypes.CreateModelRequest) (*domain.Model, error) {
 	if req.Name == "" {
@@ -27,6 +36,7 @@ func (r *Registry) CreateModel(req *apitypes.CreateModelRequest) (*domain.Model,
 	}
 	now := time.Now()
 	m := &domain.Model{
+		ID:          newID("m"),
 		Name:        req.Name,
 		Description: req.Description,
 		CreatedAt:   now,
@@ -80,6 +90,7 @@ func (r *Registry) CreateVersion(modelID string, req *apitypes.CreateModelVersio
 	}
 	now := time.Now()
 	v := &domain.ModelVersion{
+		ID:            newID("v"),
 		ModelID:       modelID,
 		Version:       req.Version,
 		ArtifactURI:   req.ArtifactURI,

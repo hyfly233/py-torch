@@ -31,6 +31,22 @@ const apiExample = computed(() => {
   -d '{"model":"${model}","messages":[{"role":"user","content":"你好"}]}'`
 })
 
+// 服务详情 Tab（对齐 INTERACTION-PROTOTYPE-V2 §3）
+const tabs = [
+  { id: 'perf', label: '性能' },
+  { id: 'gpu', label: 'GPU' },
+  { id: 'logs', label: '日志' },
+  { id: 'events', label: '事件' },
+  { id: 'config', label: '配置' },
+  { id: 'api', label: 'API 示例' },
+]
+const activeTab = ref('perf')
+interface PerfMetric { name: string; value: string }
+const perfMetrics = computed<PerfMetric[]>(() => {
+  // MVP：指标通过 observability 查询，此处展示占位（后续接真实指标）
+  return []
+})
+
 async function load() {
   loading.value = true
   error.value = ''
@@ -123,6 +139,11 @@ onMounted(load)
           <div><label>模型</label><strong>{{ dep.modelName }}:{{ dep.modelVersion }}</strong></div>
           <div><label>运行时</label><strong>{{ dep.runtime }}</strong></div>
           <div><label>副本数</label><strong>{{ dep.replicas }}</strong></div>
+          <div><label>就绪</label>
+            <strong>
+              {{ dep.podStatus ? dep.podStatus.ready + '/' + dep.podStatus.desired : '-' }}
+            </strong>
+          </div>
           <div><label>GPU</label><strong>{{ dep.resource.gpuType }} × {{ dep.resource.gpuCount }}</strong></div>
           <div><label>内存</label><strong>{{ (dep.resource.memoryMB / 1024).toFixed(0) }} GB</strong></div>
           <div><label>租户</label><strong>{{ dep.tenantId }}</strong></div>
@@ -132,30 +153,78 @@ onMounted(load)
         <div v-if="dep.diagnostics" class="error-box mt-16">诊断：{{ dep.diagnostics }}</div>
       </div>
 
-      <!-- API 示例 -->
-      <div class="panel mb-16">
-        <div class="panel-title">API 示例</div>
-        <pre>{{ apiExample }}</pre>
-      </div>
-
-      <!-- 状态事件 -->
+      <!-- Tab 导航：性能/GPU/日志/事件/配置/API 示例 -->
       <div class="panel">
-        <div class="panel-title">状态事件</div>
-        <div v-if="!dep.events?.length" class="empty">暂无事件</div>
-        <table v-else>
-          <thead>
-            <tr><th>时间</th><th>变更</th><th>原因</th></tr>
-          </thead>
-          <tbody>
-            <tr v-for="(e, i) in dep.events" :key="i">
-              <td class="dim">{{ fmtTime(e.at) }}</td>
-              <td>
-                <span v-if="e.reason" class="badge blue">{{ e.reason }}</span>
-              </td>
-              <td>{{ e.message }}</td>
-            </tr>
-          </tbody>
-        </table>
+        <div class="tabs">
+          <button
+            v-for="t in tabs"
+            :key="t.id"
+            class="tab"
+            :class="{ active: activeTab === t.id }"
+            @click="activeTab = t.id"
+          >{{ t.label }}</button>
+        </div>
+
+        <!-- 性能 -->
+        <div v-if="activeTab === 'perf'" class="tab-content">
+          <div v-if="!perfMetrics.length" class="empty">暂无性能指标，调用 API 后展示</div>
+          <div v-else class="perf-grid">
+            <div v-for="m in perfMetrics" :key="m.name" class="perf-card">
+              <div class="perf-label">{{ m.name }}</div>
+              <div class="perf-value">{{ m.value }}</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- GPU -->
+        <div v-if="activeTab === 'gpu'" class="tab-content">
+          <div class="empty">GPU 指标通过 observability 查询（见 GPU 资源页）</div>
+        </div>
+
+        <!-- 日志 -->
+        <div v-if="activeTab === 'logs'" class="tab-content">
+          <div class="empty">日志对接 K8s 日志（后续轮接入 Loki/EFK）</div>
+        </div>
+
+        <!-- 事件 -->
+        <div v-if="activeTab === 'events'" class="tab-content">
+          <div v-if="!dep.events?.length" class="empty">暂无事件</div>
+          <table v-else>
+            <thead>
+              <tr><th>时间</th><th>变更</th><th>原因</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="(e, i) in dep.events" :key="i">
+                <td class="dim">{{ fmtTime(e.at) }}</td>
+                <td>
+                  <span v-if="e.reason" class="badge blue">{{ e.reason }}</span>
+                </td>
+                <td>{{ e.message }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- 配置 -->
+        <div v-if="activeTab === 'config'" class="tab-content">
+          <div class="config-grid">
+            <div><label>服务名称</label><strong>{{ dep.name }}</strong></div>
+            <div><label>模型版本</label><strong>{{ dep.modelName }}:{{ dep.modelVersion }}</strong></div>
+            <div><label>运行时</label><strong>{{ dep.runtime }}</strong></div>
+            <div><label>副本数</label><strong>{{ dep.replicas }}</strong></div>
+            <div><label>GPU</label><strong>{{ dep.resource.gpuType }} × {{ dep.resource.gpuCount }}</strong></div>
+            <div><label>内存</label><strong>{{ (dep.resource.memoryMB / 1024).toFixed(0) }} GB</strong></div>
+            <div><label>租户</label><strong>{{ dep.tenantId }}</strong></div>
+            <div><label>命名空间</label><strong class="mono">{{ dep.namespace }}</strong></div>
+            <div><label>启动参数</label><strong class="mono">{{ dep.startupArgs?.length ? dep.startupArgs.join(' ') : '-' }}</strong></div>
+            <div><label>代数</label><strong>{{ dep.generation }}</strong></div>
+          </div>
+        </div>
+
+        <!-- API 示例 -->
+        <div v-if="activeTab === 'api'" class="tab-content">
+          <pre>{{ apiExample }}</pre>
+        </div>
       </div>
     </template>
 
@@ -195,6 +264,61 @@ onMounted(load)
   gap: 16px;
 }
 .info-grid label {
+  margin-bottom: 4px;
+}
+.tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+}
+.tab {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  padding: 10px 16px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+.tab:hover {
+  color: var(--text);
+}
+.tab.active {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+  font-weight: 600;
+}
+.tab-content {
+  padding: 8px 4px;
+}
+.perf-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+.perf-card {
+  background: var(--bg);
+  border-radius: 8px;
+  padding: 14px;
+  text-align: center;
+}
+.perf-label {
+  color: var(--text-dim);
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+.perf-value {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--primary);
+}
+.config-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+}
+.config-grid label {
   margin-bottom: 4px;
 }
 </style>

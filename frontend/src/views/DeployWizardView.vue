@@ -29,6 +29,8 @@ const memoryMB = ref(32768)
 const svcName = ref('')
 const contextLength = ref(8192)
 const startupArgs = ref('')
+// 幂等键（Step4 确认页展示）
+const idempotencyKey = ref(`deploy-${Date.now()}`)
 
 // 可用 GPU 检查
 const availableGPU = computed(() => {
@@ -66,8 +68,8 @@ async function loadVersions() {
   if (!selectedModel.value) return
   try {
     const vs = await fetchVersions(selectedModel.value)
-    // 只显示可部署版本
-    versions.value = vs.filter((v) => v.status === 'VALIDATED')
+    // 只显示已发布（RELEASED）版本
+    versions.value = vs.filter((v) => v.status === 'RELEASED')
     if (versions.value.length) {
       selectedVersion.value = versions.value[0].id
       const v = versions.value[0]
@@ -114,7 +116,7 @@ async function deploy() {
     .filter((a) => a.trim())
   try {
     const d = await createDeployment({
-      idempotencyKey: `deploy-${Date.now()}`,
+      idempotencyKey: idempotencyKey.value,
       name: svcName.value.trim(),
       modelVersionId: selectedVersion.value,
       tenantId: 'default',
@@ -142,7 +144,7 @@ onMounted(loadModels)
 
     <!-- 步骤条 -->
     <div class="steps">
-      <div v-for="(t, i) in ['选择模型', '配置资源', '配置服务']" :key="t"
+      <div v-for="(t, i) in ['选择模型', '配置资源', '配置服务', '确认部署']" :key="t"
         class="step" :class="{ active: step === i + 1, done: step > i + 1 }">
         {{ i + 1 }}. {{ t }}
       </div>
@@ -161,7 +163,7 @@ onMounted(loadModels)
           </select>
         </div>
         <div class="form-row">
-          <label>模型版本（仅显示已校验通过的版本）</label>
+          <label>模型版本（仅显示已发布的 RELEASED 版本）</label>
           <select v-model="selectedVersion">
             <option v-for="v in versions" :key="v.id" :value="v.id">
               {{ v.version }} · {{ v.runtime }} · {{ v.gpuType }} × {{ v.gpuCount }} · {{ (v.memoryMB / 1024).toFixed(0) }}GB
@@ -247,8 +249,32 @@ onMounted(loadModels)
         </div>
         <div class="flex" style="justify-content: space-between">
           <button @click="back">上一步</button>
+          <button class="primary" @click="next">下一步</button>
+        </div>
+      </div>
+
+      <!-- Step 4: 确认部署 -->
+      <div v-if="step === 4" class="panel">
+        <div class="panel-title">确认部署信息</div>
+        <div class="summary-box">
+          <div><strong>服务名称：</strong>{{ svcName }}</div>
+          <div><strong>模型：</strong>{{ selectedVersionObj?.modelName }}:{{ selectedVersionObj?.version }}</div>
+          <div><strong>运行时：</strong>{{ selectedVersionObj?.runtime }}</div>
+          <div><strong>GPU：</strong>{{ gpuType }} × {{ gpuCount }} × {{ replicas }} 副本 = {{ needGPU }} GPU</div>
+          <div><strong>内存：</strong>{{ (memoryMB / 1024).toFixed(0) }} GB/副本</div>
+          <div><strong>上下文：</strong>{{ contextLength }}</div>
+          <div><strong>启动参数：</strong>{{ startupArgs || '-' }}</div>
+          <div><strong>租户：</strong>default</div>
+          <div><strong>命名空间：</strong>tenant-default</div>
+          <div><strong>幂等键：</strong><span class="mono">{{ idempotencyKey }}</span></div>
+        </div>
+        <p class="dim" style="margin-bottom: 16px">
+          重复提交相同幂等键将返回同一部署，不会重复创建资源。
+        </p>
+        <div class="flex" style="justify-content: space-between">
+          <button @click="back">上一步</button>
           <button class="primary" :disabled="submitting" @click="deploy">
-            {{ submitting ? '部署中...' : '部署' }}
+            {{ submitting ? '部署中...' : '确认部署' }}
           </button>
         </div>
       </div>

@@ -2,7 +2,7 @@
 // 模型详情：基本信息 + 版本列表 + 注册版本/校验（管理员）
 import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { createVersion, deleteVersion, fetchModel, fetchVersions, validateVersion } from '../api'
+import { createVersion, deleteVersion, fetchModel, fetchVersions, releaseVersion, validateVersion } from '../api'
 import { useAuth } from '../composables/useAuth'
 import type { Model, ModelVersion } from '../types'
 import { fmtTime, versionBadge } from '../utils/status'
@@ -84,6 +84,16 @@ async function doValidate(v: ModelVersion) {
   }
 }
 
+async function doRelease(v: ModelVersion) {
+  if (!confirm(`确认发布版本「${v.version}」？发布后该版本可被部署。`)) return
+  try {
+    await releaseVersion(v.id)
+    await load()
+  } catch (e) {
+    alert(`发布失败: ${(e as Error).message}`)
+  }
+}
+
 async function removeVersion(v: ModelVersion) {
   if (!confirm(`确认删除版本「${v.version}」？`)) return
   try {
@@ -136,7 +146,12 @@ onMounted(load)
                     @click="doValidate(v)"
                   >校验</button>
                   <button
-                    v-if="isAdmin && v.status !== 'VALIDATED'"
+                    v-if="isAdmin && v.status === 'VALIDATED'"
+                    class="success"
+                    @click="doRelease(v)"
+                  >发布</button>
+                  <button
+                    v-if="isAdmin && v.status !== 'RELEASED' && v.status !== 'VALIDATED'"
                     class="danger"
                     @click="removeVersion(v)"
                   >删除</button>

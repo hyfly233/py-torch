@@ -1,8 +1,8 @@
 <script setup lang="ts">
-// API Key 管理（管理员专属）：创建（明文展示一次）/禁用/轮换
+// API Key 管理（管理员专属）：创建（明文展示一次）/禁用/轮换/模型授权
 import { onMounted, ref } from 'vue'
-import { disableKey, fetchKeys, issueKey, rotateKey } from '../api'
-import type { APIKey, IssueKeyResult } from '../types'
+import { disableKey, fetchKeys, fetchModels, issueKey, rotateKey, setKeyModels } from '../api'
+import type { APIKey, IssueKeyResult, Model } from '../types'
 import { fmtTime } from '../utils/status'
 
 const loading = ref(true)
@@ -16,6 +16,14 @@ const createError = ref('')
 // 明文 Key（仅展示一次）
 const newKey = ref<IssueKeyResult | null>(null)
 
+// 模型授权弹窗（R2-4）
+const showModels = ref(false)
+const modelTarget = ref<APIKey | null>(null)
+const allModels = ref<Model[]>([])
+const selectedModels = ref<string[]>([])
+const savingModels = ref(false)
+const modelError = ref('')
+
 async function load() {
   loading.value = true
   error.value = ''
@@ -25,6 +33,34 @@ async function load() {
     error.value = (e as Error).message
   } finally {
     loading.value = false
+  }
+}
+
+async function openModels(k: APIKey) {
+  modelTarget.value = k
+  modelError.value = ''
+  selectedModels.value = [...(k.models ?? [])]
+  try {
+    const ms = await fetchModels()
+    allModels.value = ms
+  } catch {
+    allModels.value = []
+  }
+  showModels.value = true
+}
+
+async function saveModels() {
+  if (!modelTarget.value) return
+  modelError.value = ''
+  savingModels.value = true
+  try {
+    await setKeyModels(modelTarget.value.id, selectedModels.value)
+    showModels.value = false
+    await load()
+  } catch (e) {
+    modelError.value = (e as Error).message
+  } finally {
+    savingModels.value = false
   }
 }
 
@@ -86,7 +122,7 @@ onMounted(load)
       <div v-if="!keys.length" class="empty">暂无 API Key，点击右上角创建</div>
       <table v-else>
         <thead>
-          <tr><th>Key ID</th><th>租户</th><th>创建时间</th><th>最近调用</th><th>状态</th><th>操作</th></tr>
+          <tr><th>Key ID</th><th>租户</th><th>创建时间</th><th>最近调用</th><th>状态</th><th>模型授权</th><th>操作</th></tr>
         </thead>
         <tbody>
           <tr v-for="k in keys" :key="k.id">
@@ -99,8 +135,12 @@ onMounted(load)
                 {{ k.disabled ? '已禁用' : '启用' }}
               </span>
             </td>
+            <td class="dim">
+              {{ k.models?.length ? k.models.join(', ') : '全部模型' }}
+            </td>
             <td>
               <div class="flex">
+                <button v-if="!k.disabled" class="ghost" @click="openModels(k)">授权模型</button>
                 <button v-if="!k.disabled" class="ghost" @click="doRotate(k)">轮换</button>
                 <button v-if="!k.disabled" class="danger" @click="doDisable(k)">禁用</button>
               </div>
@@ -137,6 +177,34 @@ onMounted(load)
         </template>
       </div>
     </div>
+
+    <!-- 模型授权弹窗 -->
+    <div v-if="showModels" class="modal-mask" @click.self="showModels = false">
+      <div class="modal">
+        <h3>授权模型：{{ modelTarget?.id }}</h3>
+        <div v-if="modelError" class="error-box">{{ modelError }}</div>
+        <p class="dim mb-16">
+          选择该 Key 可访问的模型。留空表示可访问全部模型。
+        </p>
+        <div v-if="!allModels.length" class="empty">暂无模型</div>
+        <div v-else class="model-check-list">
+          <label v-for="m in allModels" :key="m.id" class="model-check">
+            <input
+              v-model="selectedModels"
+              type="checkbox"
+              :value="m.name"
+            />
+            {{ m.name }}
+          </label>
+        </div>
+        <div class="flex" style="justify-content: flex-end; margin-top: 16px">
+          <button @click="showModels = false">取消</button>
+          <button class="primary" :disabled="savingModels" @click="saveModels">
+            {{ savingModels ? '保存中...' : '保存' }}
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -156,5 +224,22 @@ onMounted(load)
   font-size: 13px;
   color: var(--success);
   word-break: break-all;
+}
+.model-check-list {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+.model-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--bg);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
 }
 </style>
