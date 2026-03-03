@@ -69,6 +69,18 @@ const routes: RouteRecordRaw[] = [
         meta: { title: 'GPU 资源' },
       },
       {
+        path: 'quotas',
+        name: 'quotas',
+        component: () => import('../views/QuotasView.vue'),
+        meta: { title: '租户与配额', adminOnly: true },
+      },
+      {
+        path: 'audit',
+        name: 'audit',
+        component: () => import('../views/AuditView.vue'),
+        meta: { title: '告警与审计', adminOnly: true },
+      },
+      {
         path: 'keys',
         name: 'keys',
         component: () => import('../views/KeysView.vue'),

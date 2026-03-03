@@ -26,8 +26,10 @@ export function statusBadge(status: string): string {
 // 模型版本状态 → badge class
 export function versionBadge(status: string): string {
   switch (status) {
-    case 'VALIDATED':
+    case 'RELEASED':
       return 'green'
+    case 'VALIDATED':
+      return 'blue'
     case 'VALIDATING':
       return 'blue'
     case 'REGISTERED':

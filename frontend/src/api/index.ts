@@ -141,9 +141,14 @@ export function createVersion(modelId: string, body: {
   })
 }
 
-// 校验版本
+// 校验版本（REGISTERED → VALIDATED）
 export function validateVersion(versionId: string): Promise<ModelVersion> {
   return request(`/model-registry/v1/versions/${versionId}/validate`, { method: 'POST' })
+}
+
+// 发布版本（VALIDATED → RELEASED，发布后才可部署）
+export function releaseVersion(versionId: string): Promise<ModelVersion> {
+  return request(`/model-registry/v1/versions/${versionId}/release`, { method: 'POST' })
 }
 
 // 删除版本
@@ -171,4 +176,46 @@ export function disableKey(keyId: string): Promise<{ disabled: boolean }> {
 // 轮换 API Key
 export function rotateKey(keyId: string, tenantId = 'default'): Promise<IssueKeyResult> {
   return request(`/gateway/v1/keys/${keyId}/rotate?tenant=${tenantId}`, { method: 'POST' })
+}
+
+// 设置 Key 模型白名单
+export function setKeyModels(keyId: string, models: string[]): Promise<{ updated: boolean }> {
+  return request(`/gateway/v1/keys/${keyId}/models`, { method: 'POST', body: JSON.stringify({ models }) })
+}
+
+// ---- 租户配额（controlplane） ----
+
+export interface TenantQuota {
+  tenantId: string
+  gpuType: string
+  quota: number
+  used: number
+}
+
+export function fetchQuotas(): Promise<TenantQuota[]> {
+  return request('/api/v1/quotas')
+}
+
+export function setQuota(tenantId: string, gpuType: string, quota: number): Promise<TenantQuota> {
+  return request(`/api/v1/quotas/${tenantId}`, {
+    method: 'PUT',
+    body: JSON.stringify({ gpuType, quota }),
+  })
+}
+
+// ---- 审计日志（controlplane） ----
+
+export interface AuditEntry {
+  id: number
+  action: string
+  actor: string
+  tenantId: string
+  resource: string
+  requestId: string
+  detail: string
+  createdAt: string
+}
+
+export function fetchAudit(limit = 50): Promise<AuditEntry[]> {
+  return request(`/api/v1/audit?limit=${limit}`)
 }

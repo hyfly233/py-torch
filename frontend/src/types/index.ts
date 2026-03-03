@@ -19,7 +19,7 @@ export interface Model {
   updatedAt: string
 }
 
-export type ModelVersionStatus = 'REGISTERED' | 'VALIDATING' | 'VALIDATED' | 'UNAVAILABLE'
+export type ModelVersionStatus = 'REGISTERED' | 'VALIDATING' | 'VALIDATED' | 'RELEASED' | 'UNAVAILABLE'
 
 export interface ModelVersion {
   id: string
@@ -127,7 +127,14 @@ export interface EventView {
   at: string
 }
 
+export interface PodStatusView {
+  ready: number
+  desired: number
+  available: number
+}
+
 export interface DeploymentView extends Deployment {
+  podStatus?: PodStatusView
   events?: EventView[]
 }
 
@@ -137,6 +144,8 @@ export interface APIKey {
   id: string
   keyHash: string
   tenantId: string
+  /** 模型白名单（空 = 全部） */
+  models?: string[]
   createdAt: string
   lastUsedAt?: string
   disabled: boolean

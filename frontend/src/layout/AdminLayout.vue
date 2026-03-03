@@ -13,6 +13,8 @@ const allMenus = [
   { name: 'models', label: '模型管理', path: '/models' },
   { name: 'deployments', label: '模型服务', path: '/deployments' },
   { name: 'gpus', label: 'GPU 资源', path: '/gpus' },
+  { name: 'quotas', label: '租户与配额', path: '/quotas', adminOnly: true },
+  { name: 'audit', label: '告警与审计', path: '/audit', adminOnly: true },
   { name: 'keys', label: 'API Key', path: '/keys', adminOnly: true },
   { name: 'settings', label: '系统设置', path: '/settings', adminOnly: true },
 ]
