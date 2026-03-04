@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Carrot AI Infra —— 本地一键启动（Fake K8s 环境，6 服务）
-# 用法: hack/dev-up.sh [--no-build]
+# 用法: hack/dev-up.sh [--no-build] [--storage=postgres|memory]
+#   --storage=postgres 使用本机 docker Postgres（localhost:5432/carrot），默认 memory
 # 启动后访问: 前端 http://localhost:5173（cd frontend && npm run dev）
 #            控制面 http://localhost:8080  (REST API)
 #            网关   http://localhost:8083  (OpenAI 兼容 API)
@@ -10,6 +11,15 @@ export PATH="/opt/homebrew/bin:$PATH"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN_DIR="${TMPDIR:-/tmp}/kk-infra-bin"
 PIDS=()
+STORAGE="memory"
+NO_BUILD=false
+
+for arg in "$@"; do
+  case "$arg" in
+    --no-build) NO_BUILD=true ;;
+    --storage=*) STORAGE="${arg#--storage=}" ;;
+  esac
+done
 
 log() { echo -e "\n\033[1;36m=== $* ===\033[0m"; }
 
@@ -21,7 +31,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # ---------- 1. 编译 ----------
-if [ "${1:-}" != "--no-build" ]; then
+if [ "$NO_BUILD" != "true" ]; then
   log "编译全部服务二进制 → $BIN_DIR"
   mkdir -p "$BIN_DIR"
   for svc in modelregistry k8sadapter controlplane gateway observability inference; do
@@ -31,18 +41,19 @@ if [ "${1:-}" != "--no-build" ]; then
 fi
 
 # ---------- 2. 启动 6 个服务 ----------
-log "启动 modelregistry :8081"
-"$BIN_DIR/modelregistry" --addr :8081 &
+log "启动 modelregistry :8081(storage=$STORAGE)"
+"$BIN_DIR/modelregistry" --addr :8081 --storage "$STORAGE" &
 PIDS+=($!)
 
 log "启动 k8sadapter :8082（Fake 集群，2 节点 × 8 卡 A100）"
 "$BIN_DIR/k8sadapter" --addr :8082 --fake=true &
 PIDS+=($!)
 
-log "启动 controlplane :8080"
+log "启动 controlplane :8080(storage=$STORAGE)"
 "$BIN_DIR/controlplane" --addr :8080 \
   --model-registry http://127.0.0.1:8081 \
   --k8s-adapter http://127.0.0.1:8082 \
+  --storage "$STORAGE" \
   --observability-url http://127.0.0.1:8084 &
 PIDS+=($!)
 
@@ -51,8 +62,9 @@ log "启动 observability :8084（GPU 采集来自 controlplane）"
   --controlplane-url http://127.0.0.1:8080 &
 PIDS+=($!)
 
-log "启动 gateway :8083（指标上报到 observability）"
+log "启动 gateway :8083(指标上报到 observability, storage=$STORAGE)"
 "$BIN_DIR/gateway" --addr :8083 \
+  --storage "$STORAGE" \
   --observability-url http://127.0.0.1:8084 &
 PIDS+=($!)
 

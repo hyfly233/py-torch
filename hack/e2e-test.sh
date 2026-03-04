@@ -67,7 +67,8 @@ VER_JSON=$(curl -s -X POST "$MR/api/v1/models/$MODEL_ID/versions" -H 'Content-Ty
   -d '{"version":"7b","artifactUri":"s3://models/qwen-7b","runtime":"vLLM","gpuType":"A100","gpuCount":1,"memoryMB":2048,"contextLength":8192}')
 VERSION_ID=$(echo "$VER_JSON" | json_field "['data']['id']")
 curl -s -X POST "$MR/api/v1/versions/$VERSION_ID/validate" >/dev/null
-echo "模型 $MODEL_ID 版本 $VERSION_ID 已注册并校验"
+curl -s -X POST "$MR/api/v1/versions/$VERSION_ID/release" >/dev/null
+echo "版本已校验并发布 (RELEASED)"
 
 # ---------- 4. 创建部署 ----------
 log "4. 创建模型服务 qwen-demo（1 GPU × 1 副本）"

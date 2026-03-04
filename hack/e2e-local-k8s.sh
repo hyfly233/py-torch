@@ -89,7 +89,8 @@ VERSION_ID=$(echo "$VER_JSON" | python3 -c "import sys,json;print(json.load(sys.
 
 log "5.3 校验版本"
 curl -s -X POST "http://127.0.0.1:8081/api/v1/versions/$VERSION_ID/validate" >/dev/null
-
+curl -s -X POST "http://127.0.0.1:8081/api/v1/versions/$VERSION_ID/release" >/dev/null
+echo "版本已校验并发布 (RELEASED)"
 # ---------- 6. 创建部署（真实 K8s） ----------
 log "6.1 创建模型服务 qwen-demo（1 GPU × 1 副本）"
 DEPLOY_JSON=$(curl -s -X POST http://127.0.0.1:8080/api/v1/deployments -H 'Content-Type: application/json' \

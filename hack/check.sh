@@ -13,6 +13,12 @@ if [ ${#MODULES[@]} -eq 0 ]; then
   MODULES=(
     ./lib
     ./services/modelregistry
+    ./services/k8sadapter
+    ./services/controlplane
+    ./services/gateway
+    ./services/inference
+    ./services/observability
+    ./services/pipeline
   )
 fi
 
