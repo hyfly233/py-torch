@@ -59,25 +59,46 @@ func TestStateMachine_TransitionError(t *testing.T) {
 // 模型版本可部署性
 func TestModelVersion_Deployable(t *testing.T) {
 	ok := &ModelVersion{
-		Status:     ModelStatusValidated,
+		Status:     ModelStatusReleased,
 		Runtime:    RuntimeVLLM,
 		ArtifactURI: "s3://bucket/qwen",
 		GPUType:    "A100",
 		GPUCount:   1,
 	}
 	if !ok.Deployable() {
-		t.Fatal("有效版本应可部署")
+		t.Fatal("RELEASED 版本应可部署")
 	}
 	cases := []*ModelVersion{
 		{Status: ModelStatusRegistered, Runtime: RuntimeVLLM, ArtifactURI: "s3://x", GPUType: "A100", GPUCount: 1},
-		{Status: ModelStatusValidated, Runtime: "Triton", ArtifactURI: "s3://x", GPUType: "A100", GPUCount: 1},
-		{Status: ModelStatusValidated, Runtime: RuntimeVLLM, ArtifactURI: "", GPUType: "A100", GPUCount: 1},
-		{Status: ModelStatusValidated, Runtime: RuntimeVLLM, ArtifactURI: "s3://x", GPUType: "", GPUCount: 1},
-		{Status: ModelStatusValidated, Runtime: RuntimeVLLM, ArtifactURI: "s3://x", GPUType: "A100", GPUCount: 0},
+		{Status: ModelStatusValidated, Runtime: RuntimeVLLM, ArtifactURI: "s3://x", GPUType: "A100", GPUCount: 1},
+		{Status: ModelStatusReleased, Runtime: "Triton", ArtifactURI: "s3://x", GPUType: "A100", GPUCount: 1},
+		{Status: ModelStatusReleased, Runtime: RuntimeVLLM, ArtifactURI: "", GPUType: "A100", GPUCount: 1},
+		{Status: ModelStatusReleased, Runtime: RuntimeVLLM, ArtifactURI: "s3://x", GPUType: "", GPUCount: 1},
+		{Status: ModelStatusReleased, Runtime: RuntimeVLLM, ArtifactURI: "s3://x", GPUType: "A100", GPUCount: 0},
 	}
 	for i, c := range cases {
 		if c.Deployable() {
 			t.Errorf("case %d 不应可部署: %+v", i, c)
+		}
+	}
+}
+
+// 版本状态机：REGISTERED → VALIDATED → RELEASED
+func TestVersionStateMachine(t *testing.T) {
+	cases := []struct{ from, to string; ok bool }{
+		{ModelStatusRegistered, ModelStatusValidating, true},
+		{ModelStatusRegistered, ModelStatusValidated, true},
+		{ModelStatusValidated, ModelStatusReleased, true},
+		{ModelStatusReleased, ModelStatusUnavailable, true},
+		// 非法
+		{ModelStatusRegistered, ModelStatusReleased, false},
+		{ModelStatusValidating, ModelStatusReleased, false},
+		{ModelStatusReleased, ModelStatusValidated, false},
+		{ModelStatusUnavailable, ModelStatusValidated, false},
+	}
+	for _, c := range cases {
+		if got := CanTransitionVersion(c.from, c.to); got != c.ok {
+			t.Errorf("CanTransitionVersion(%s→%s) = %v, want %v", c.from, c.to, got, c.ok)
 		}
 	}
 }

@@ -11,11 +11,29 @@ const (
 
 // 模型版本状态
 const (
-	ModelStatusRegistered   = "REGISTERED"   // 已注册
-	ModelStatusValidating   = "VALIDATING"   // 校验中
-	ModelStatusValidated    = "VALIDATED"    // 校验通过，可部署
-	ModelStatusUnavailable  = "UNAVAILABLE"  // 不可部署
+	ModelStatusRegistered  = "REGISTERED"  // 已注册
+	ModelStatusValidating  = "VALIDATING"  // 校验中
+	ModelStatusValidated   = "VALIDATED"   // 校验通过（可进入发布）
+	ModelStatusReleased    = "RELEASED"    // 已发布（可部署）
+	ModelStatusUnavailable = "UNAVAILABLE" // 不可部署
 )
+
+// 版本状态流转：REGISTERED → VALIDATED → RELEASED
+var versionTransitions = map[string]map[string]bool{
+	ModelStatusRegistered: {ModelStatusValidating: true, ModelStatusUnavailable: true, ModelStatusValidated: true},
+	ModelStatusValidating: {ModelStatusValidated: true, ModelStatusUnavailable: true},
+	ModelStatusValidated:  {ModelStatusReleased: true, ModelStatusUnavailable: true},
+	ModelStatusReleased:   {ModelStatusUnavailable: true},
+	ModelStatusUnavailable: {},
+}
+
+// CanTransitionVersion 判断版本状态是否可流转
+func CanTransitionVersion(from, to string) bool {
+	if tos, ok := versionTransitions[from]; ok {
+		return tos[to]
+	}
+	return false
+}
 
 // Model 模型主信息
 type Model struct {
@@ -43,10 +61,10 @@ type ModelVersion struct {
 	UpdatedAt     time.Time `json:"updatedAt"`
 }
 
-// Deployable 校验模型版本是否可部署
+// Deployable 校验模型版本是否可部署（仅 RELEASED 可部署，对齐 PRD-V2 §4）
 func (v *ModelVersion) Deployable() bool {
 	return v != nil &&
-		v.Status == ModelStatusValidated &&
+		v.Status == ModelStatusReleased &&
 		v.Runtime == RuntimeVLLM &&
 		v.ArtifactURI != "" &&
 		v.GPUType != "" &&
