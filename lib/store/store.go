@@ -19,6 +19,7 @@ func MigrateAll(db *sql.DB) error {
 	m := NewMigrator(db)
 	return m.Migrate(migrationsFS, []string{
 		"migrations/001_init.sql",
+		"migrations/002_api_key_models.sql",
 	})
 }
 
