@@ -22,6 +22,7 @@ type K8sClient interface {
 	ListGPUs(ctx context.Context) ([]domain.GPUResource, error)
 	CreateDeployment(ctx context.Context, spec *clients.CreateDeploymentSpec) (*clients.K8sDeploymentResult, error)
 	GetDeployment(ctx context.Context, name, namespace string) (*clients.K8sDeploymentResult, error)
+	ListDeployments(ctx context.Context, namespace string) ([]*clients.K8sDeploymentResult, error)
 	ScaleDeployment(ctx context.Context, name, namespace string, replicas int32) (*clients.K8sDeploymentResult, error)
 	DeleteDeployment(ctx context.Context, name, namespace string) error
 }
@@ -37,6 +38,10 @@ type DeploymentUseCase struct {
 	defaultTenant string
 	// 部署镜像（空则使用 k8sadapter 默认；本机验证用 mock 镜像）
 	deploymentImage string
+	// 租户配额（R2-4，可为 nil 表示不启用）
+	quota *QuotaUseCase
+	// 审计日志（R2-4，可为 nil 表示不记录）
+	audit *AuditUseCase
 }
 
 // NewDeploymentUseCase 创建用例
@@ -49,6 +54,16 @@ func NewDeploymentUseCase(repo data.DeploymentRepository, models ModelRegistryCl
 		now:           time.Now,
 		defaultTenant: "default",
 	}
+}
+
+// SetQuota 启用租户配额校验
+func (uc *DeploymentUseCase) SetQuota(quota *QuotaUseCase) {
+	uc.quota = quota
+}
+
+// SetAudit 启用审计日志
+func (uc *DeploymentUseCase) SetAudit(audit *AuditUseCase) {
+	uc.audit = audit
 }
 
 // SetDeploymentImage 设置部署镜像（验证环境注入 mock 镜像）
@@ -75,13 +90,23 @@ func (uc *DeploymentUseCase) CreateDeployment(ctx context.Context, req *apitypes
 	// 版本对应模型 ID（MVP：版本接口返回 ModelID）
 	modelID := version.ModelID
 
-	// 2. 校验资源配额（GPU 足够）
+	// 2. 校验资源配额（GPU 足够 + 租户配额）
 	tenantID := req.TenantID
 	if tenantID == "" {
 		tenantID = uc.defaultTenant
 	}
 	if err := uc.checkGPUQuota(ctx, version.GPUType, version.GPUCount, req.Replicas); err != nil {
 		return nil, err
+	}
+	// R2-4：租户配额预留
+	if uc.quota != nil {
+		need := version.GPUCount * req.Replicas
+		if need <= 0 {
+			need = version.GPUCount
+		}
+		if err := uc.quota.Reserve(ctx, tenantID, version.GPUType, need); err != nil {
+			return nil, err
+		}
 	}
 
 	// 3. 构建部署对象
@@ -123,6 +148,11 @@ func (uc *DeploymentUseCase) CreateDeployment(ctx context.Context, req *apitypes
 		return nil, errcode.Wrap(errcode.ErrInternal, "写入部署失败", err)
 	}
 	uc.recordEvent(d.ID, "", domain.DeploymentStatusNew, "创建部署请求", getRequestID(ctx), "")
+	// R2-4：审计
+	if uc.audit != nil {
+		uc.audit.Record("deployment.create", "console", tenantID, d.ID, getRequestID(ctx),
+			"创建部署 "+d.Name+" (版本 "+version.Version+", "+itoa32(d.Replicas*d.Resource.GPUCount)+" GPU)")
+	}
 
 	// 5. 异步提交（VALIDATING → SUBMITTING → K8s）
 	// 注意：不能复用请求 ctx（请求返回后即取消），使用独立后台 ctx
@@ -191,6 +221,11 @@ func (uc *DeploymentUseCase) transition(id, from, to, reason string) error {
 
 // failDeployment 置为失败
 func (uc *DeploymentUseCase) failDeployment(id, diag string) {
+	uc.FailDeployment(id, diag)
+}
+
+// FailDeployment 置为失败（导出，供 Reconciler 超时判定调用）
+func (uc *DeploymentUseCase) FailDeployment(id, diag string) {
 	uc.updateDeployment(id, func(d *domain.ModelDeployment) {
 		from := d.Status
 		if uc.sm.CanTransition(from, domain.DeploymentStatusFailed) {
@@ -199,6 +234,23 @@ func (uc *DeploymentUseCase) failDeployment(id, diag string) {
 			d.UpdatedAt = uc.now()
 			uc.recordEvent(id, from, domain.DeploymentStatusFailed, "部署失败", getRequestID(context.Background()), diag)
 		}
+	})
+}
+
+// RetryDelete 删除重试（DELETING 超时后由 Reconciler 调用，幂等）
+func (uc *DeploymentUseCase) RetryDelete(ctx context.Context, id string) {
+	d, err := uc.repo.Get(id)
+	if err != nil {
+		return
+	}
+	// 幂等重试删除
+	if err := uc.kube.DeleteDeployment(ctx, d.Name, d.Namespace); err != nil {
+		uc.failDeployment(id, "删除重试失败: "+err.Error())
+		return
+	}
+	uc.recordEvent(id, domain.DeploymentStatusDeleting, domain.DeploymentStatusDeleted, "删除完成（重试）", getRequestID(ctx), "")
+	uc.updateDeployment(id, func(dd *domain.ModelDeployment) {
+		dd.Status = domain.DeploymentStatusDeleted
 	})
 }
 
@@ -235,9 +287,45 @@ func (uc *DeploymentUseCase) GetDeployment(id string) (*domain.ModelDeployment, 
 	return d, nil
 }
 
+// GetDeploymentWithK8sStatus 查询部署并附上实际 K8s 状态（Pod 副本就绪情况）。
+// 供服务详情页使用；K8s 查询失败时降级返回本地状态（不阻塞详情展示）。
+func (uc *DeploymentUseCase) GetDeploymentWithK8sStatus(ctx context.Context, id string) (*domain.ModelDeployment, *apitypes.PodStatusView, error) {
+	d, err := uc.GetDeployment(id)
+	if err != nil {
+		return nil, nil, err
+	}
+	pv := &apitypes.PodStatusView{Ready: 0, Desired: d.Replicas, Available: 0}
+	if d.Status == domain.DeploymentStatusDeleted || d.Status == domain.DeploymentStatusDeleting {
+		return d, pv, nil
+	}
+	res, err := uc.kube.GetDeployment(ctx, d.Name, d.Namespace)
+	if err != nil || res.Status == nil {
+		return d, pv, nil // 降级
+	}
+	pv.Ready = res.Status.ReadyReplicas
+	pv.Available = res.Status.AvailableReplicas
+	return d, pv, nil
+}
+
 // ListDeployments 部署列表
 func (uc *DeploymentUseCase) ListDeployments(tenantID string) ([]*domain.ModelDeployment, error) {
 	return uc.repo.List(tenantID)
+}
+
+// ListK8sDeployments 扫描 K8s 中全部受管部署（R2-2：孤儿检测）
+// 返回 map[name]deploymentID；name 用于与本地记录匹配。
+func (uc *DeploymentUseCase) ListK8sDeployments(ctx context.Context, namespace string) (map[string]bool, error) {
+	list, err := uc.kube.ListDeployments(ctx, namespace)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]bool{}
+	for _, res := range list {
+		if res.Name != "" {
+			out[res.Name] = true
+		}
+	}
+	return out, nil
 }
 
 // ScaleDeployment 扩缩容（幂等）
@@ -252,6 +340,17 @@ func (uc *DeploymentUseCase) ScaleDeployment(ctx context.Context, id string, rep
 	// 配额校验
 	if err := uc.checkGPUQuota(ctx, d.Resource.GPUType, d.Resource.GPUCount, replicas); err != nil {
 		return nil, err
+	}
+	// R2-4：租户配额（扩容需增加预留，缩容释放）
+	if uc.quota != nil {
+		delta := (replicas - d.Replicas) * d.Resource.GPUCount
+		if delta > 0 {
+			if err := uc.quota.Reserve(ctx, d.TenantID, d.Resource.GPUType, delta); err != nil {
+				return nil, err
+			}
+		} else if delta < 0 {
+			uc.quota.Release(ctx, d.TenantID, d.Resource.GPUType, -delta)
+		}
 	}
 
 	// 状态机：Running → SCALING
@@ -276,6 +375,11 @@ func (uc *DeploymentUseCase) ScaleDeployment(ctx context.Context, id string, rep
 	if d.Status == domain.DeploymentStatusScaling {
 		uc.transition(id, domain.DeploymentStatusScaling, domain.DeploymentStatusRunning, "扩缩容完成")
 	}
+	// R2-4：审计
+	if uc.audit != nil {
+		uc.audit.Record("deployment.scale", "console", d.TenantID, id, getRequestID(ctx),
+			"扩缩容 "+d.Name+" 到 "+itoa32(replicas)+" 副本")
+	}
 	return uc.repo.Get(id)
 }
 
@@ -291,6 +395,86 @@ func (uc *DeploymentUseCase) RestartDeployment(ctx context.Context, id string) (
 	uc.transition(id, d.Status, domain.DeploymentStatusRestarting, "发起重启")
 	time.Sleep(300 * time.Millisecond) // 模拟重启
 	uc.transition(id, domain.DeploymentStatusRestarting, domain.DeploymentStatusRunning, "重启完成")
+	return uc.repo.Get(id)
+}
+
+// UpgradeDeployment 升级/回滚部署：切换到新模型版本（R3 灰度/回滚基础）。
+// 校验新版本 RELEASED + 配额，更新期望状态并触发 K8s 滚动更新。
+func (uc *DeploymentUseCase) UpgradeDeployment(ctx context.Context, id, newVersionID string) (*domain.ModelDeployment, error) {
+	d, err := uc.repo.Get(id)
+	if err != nil {
+		return nil, errcode.Wrap(errcode.ErrNotFound, "部署不存在: "+id, err)
+	}
+	if d.Status != domain.DeploymentStatusRunning {
+		return nil, errcode.New(errcode.ErrIllegalState, "当前状态 "+d.Status+" 不允许升级")
+	}
+	if newVersionID == "" || newVersionID == d.ModelVersionID {
+		return nil, errcode.New(errcode.ErrBadRequest, "新版本 ID 必填且不能与当前相同")
+	}
+
+	// 校验新版本
+	version, err := uc.models.GetVersion(ctx, newVersionID)
+	if err != nil {
+		return nil, errcode.Wrap(errcode.ErrModelVersionFound, "模型版本校验失败", err)
+	}
+	if !version.Deployable() {
+		return nil, errcode.New(errcode.ErrModelNotDeployable,
+			"新版本不可部署（状态="+version.Status+"），仅 RELEASED 可升级")
+	}
+	// 配额：新版本 GPU 需求变化时校验（资源规格可能不同）
+	if uc.quota != nil {
+		need := version.GPUCount * d.Replicas
+		if err := uc.quota.Reserve(ctx, d.TenantID, version.GPUType, need); err != nil {
+			return nil, err
+		}
+		// 释放旧版本占用（GPU 型号/数量可能不同）
+		uc.quota.Release(ctx, d.TenantID, d.Resource.GPUType, d.Resource.GPUCount*d.Replicas)
+	}
+
+	// 更新期望状态
+	uc.transition(id, d.Status, domain.DeploymentStatusRestarting, "升级到版本 "+version.Version)
+	uc.updateDeployment(id, func(dd *domain.ModelDeployment) {
+		dd.ModelVersionID = version.ID
+		dd.ModelName = version.ModelName
+		dd.ModelVersion = version.Version
+		dd.Resource = domain.Resource{
+			GPUType:  version.GPUType,
+			GPUCount: version.GPUCount,
+			MemoryMB: version.MemoryMB,
+		}
+		dd.Generation++
+	})
+
+	// 触发 K8s 滚动更新：重建 Deployment（renderer 用新版本参数）
+	spec := &clients.CreateDeploymentSpec{
+		DeploymentID: d.ID,
+		Name:         d.Name,
+		Namespace:    d.Namespace,
+		Replicas:     d.Replicas,
+		Resource:     domain.Resource{GPUType: version.GPUType, GPUCount: version.GPUCount, MemoryMB: version.MemoryMB},
+		Image:        uc.deploymentImage,
+		Args:         d.StartupArgs,
+		Labels: map[string]string{
+			"carrot.ai/deployment-id": d.ID,
+			"carrot.ai/model-id":      version.ModelID,
+			"carrot.ai/model-version": version.Version,
+			"carrot.ai/tenant-id":     d.TenantID,
+			"carrot.ai/managed-by":    "carrot",
+		},
+		ModelPath: deploymentModelPath(d),
+	}
+	if _, err := uc.kube.CreateDeployment(ctx, spec); err != nil {
+		uc.failDeployment(id, "升级失败: "+err.Error())
+		return nil, errcode.Wrap(errcode.ErrInternal, "升级失败", err)
+	}
+	uc.transition(id, domain.DeploymentStatusRestarting, domain.DeploymentStatusRunning, "升级完成")
+	uc.SyncFromK8s(ctx, id)
+
+	// 审计
+	if uc.audit != nil {
+		uc.audit.Record("deployment.upgrade", "console", d.TenantID, id, getRequestID(ctx),
+			"升级部署 "+d.Name+" 到版本 "+version.Version)
+	}
 	return uc.repo.Get(id)
 }
 
@@ -318,6 +502,15 @@ func (uc *DeploymentUseCase) DeleteDeployment(ctx context.Context, id string) er
 	uc.updateDeployment(id, func(dd *domain.ModelDeployment) {
 		dd.Status = domain.DeploymentStatusDeleted
 	})
+	// R2-4：释放租户配额
+	if uc.quota != nil {
+		uc.quota.Release(ctx, d.TenantID, d.Resource.GPUType, d.Replicas*d.Resource.GPUCount)
+	}
+	// R2-4：审计
+	if uc.audit != nil {
+		uc.audit.Record("deployment.delete", "console", d.TenantID, id, getRequestID(ctx),
+			"删除部署 "+d.Name+"，释放 "+itoa32(d.Replicas*d.Resource.GPUCount)+" GPU")
+	}
 	return nil
 }
 
