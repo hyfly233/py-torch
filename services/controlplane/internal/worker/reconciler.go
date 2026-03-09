@@ -18,16 +18,28 @@ type Reconciler struct {
 	deployUse *biz.DeploymentUseCase
 	logger    *slog.Logger
 	interval  time.Duration
+	// 部署启动超时：STARTING 状态超过该时长未收敛 → FAILED（R2-5）
+	startTimeout time.Duration
+	// 删除超时：DELETING 状态超过该时长仍未删除 → 强制失败/重试（R2-5）
+	deleteTimeout time.Duration
 }
 
 // NewReconciler 创建对账器
 func NewReconciler(repo data.DeploymentRepository, deployUse *biz.DeploymentUseCase, logger *slog.Logger, interval time.Duration) *Reconciler {
 	return &Reconciler{
-		repo:      repo,
-		deployUse: deployUse,
-		logger:    logger,
-		interval:  interval,
+		repo:         repo,
+		deployUse:    deployUse,
+		logger:       logger,
+		interval:     interval,
+		startTimeout: 5 * time.Minute,  // STARTING 5 分钟未就绪判失败
+		deleteTimeout: 3 * time.Minute, // DELETING 3 分钟未完成则重试
 	}
+}
+
+// SetTimeouts 自定义超时（测试用）
+func (r *Reconciler) SetTimeouts(start, delete_ time.Duration) {
+	r.startTimeout = start
+	r.deleteTimeout = delete_
 }
 
 // Run 启动对账循环（阻塞，直到 ctx 取消）
@@ -36,8 +48,9 @@ func (r *Reconciler) Run(ctx context.Context) {
 	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
 
-	// 启动时立即对账一次（控制面重启恢复）
+	// 启动时立即对账一次（控制面重启恢复 + 孤儿检测）
 	r.reconcileAll(ctx)
+	r.reconcileOrphans(ctx)
 
 	for {
 		select {
@@ -46,6 +59,33 @@ func (r *Reconciler) Run(ctx context.Context) {
 			return
 		case <-ticker.C:
 			r.reconcileAll(ctx)
+			r.reconcileOrphans(ctx)
+		}
+	}
+}
+
+// reconcileOrphans 孤儿资源检测（R2-2）：
+// K8s 中存在 `carrot.ai/managed-by=carrot` 标签的 Deployment，
+// 但本地 repo 无对应记录 → 记录告警（不自动删除，避免误删用户资源）。
+func (r *Reconciler) reconcileOrphans(ctx context.Context) {
+	local := map[string]bool{}
+	deploys, err := r.repo.List("")
+	if err == nil {
+		for _, d := range deploys {
+			if d.Status != domain.DeploymentStatusDeleted {
+				local[d.Name] = true
+			}
+		}
+	}
+	// 扫描默认租户命名空间
+	remote, err := r.deployUse.ListK8sDeployments(ctx, "tenant-default")
+	if err != nil {
+		r.logger.Warn("孤儿检测：扫描 K8s 部署失败", "err", err)
+		return
+	}
+	for name := range remote {
+		if !local[name] {
+			r.logger.Warn("检测到孤儿 K8s 部署（本地无记录）", "deployment", name)
 		}
 	}
 }
@@ -57,16 +97,30 @@ func (r *Reconciler) reconcileAll(ctx context.Context) {
 		r.logger.Error("对账：列出部署失败", "err", err)
 		return
 	}
+	now := time.Now()
 	for _, d := range deploys {
-		// 终态（DELETED）或进行中状态跳过，其余由对账推进
-		switch d.Status {
-		case domain.DeploymentStatusDeleted, domain.DeploymentStatusDeleting:
-			continue
-		case domain.DeploymentStatusRunning:
-			// 已运行：核对副本数（异常时打日志，MVP 不做自动修复）
+		// 终态（DELETED）跳过
+		if d.Status == domain.DeploymentStatusDeleted {
 			continue
 		}
-		// 对非终态部署同步 K8s 实际状态
+		// R2-5：STARTING 超时 → FAILED
+		if d.Status == domain.DeploymentStatusStarting && now.Sub(d.UpdatedAt) > r.startTimeout {
+			r.logger.Warn("部署启动超时，置为 FAILED",
+				"deployment", d.Name, "timeout", r.startTimeout.String())
+			r.deployUse.FailDeployment(d.ID, "启动超时（"+r.startTimeout.String()+"）未就绪")
+			continue
+		}
+		// R2-5：DELETING 超时 → 重试删除
+		if d.Status == domain.DeploymentStatusDeleting && now.Sub(d.UpdatedAt) > r.deleteTimeout {
+			r.logger.Warn("删除超时，重试删除", "deployment", d.Name)
+			r.deployUse.RetryDelete(ctx, d.ID)
+			continue
+		}
+		// RUNNING 状态：核对副本数（异常打日志，MVP 不做自动修复）
+		if d.Status == domain.DeploymentStatusRunning {
+			continue
+		}
+		// 其他非终态：同步 K8s 实际状态
 		r.reconcileOne(ctx, d)
 	}
 }

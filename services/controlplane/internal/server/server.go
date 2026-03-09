@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"kk-infra/lib/apitypes"
@@ -20,14 +21,16 @@ import (
 type Server struct {
 	deployments   *biz.DeploymentUseCase
 	resources     *biz.ResourceUseCase
+	quotas        *biz.QuotaUseCase
+	audit         *biz.AuditUseCase
 	repo          data.DeploymentRepository
 	logger        *slog.Logger
 	observability *clients.ObservabilityClient // 可为 nil（未配置时返回占位）
 }
 
 // NewServer 创建服务
-func NewServer(deployments *biz.DeploymentUseCase, resources *biz.ResourceUseCase, repo data.DeploymentRepository, logger *slog.Logger) *Server {
-	return &Server{deployments: deployments, resources: resources, repo: repo, logger: logger}
+func NewServer(deployments *biz.DeploymentUseCase, resources *biz.ResourceUseCase, quotas *biz.QuotaUseCase, audit *biz.AuditUseCase, repo data.DeploymentRepository, logger *slog.Logger) *Server {
+	return &Server{deployments: deployments, resources: resources, quotas: quotas, audit: audit, repo: repo, logger: logger}
 }
 
 // SetObservabilityClient 注入可观测性客户端（未配置时指标返回占位）。
@@ -45,11 +48,19 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/deployments/{id}", s.handleGetDeployment)
 	mux.HandleFunc("POST /api/v1/deployments/{id}/scale", s.handleScaleDeployment)
 	mux.HandleFunc("POST /api/v1/deployments/{id}/restart", s.handleRestartDeployment)
+	mux.HandleFunc("POST /api/v1/deployments/{id}/upgrade", s.handleUpgradeDeployment)
 	mux.HandleFunc("DELETE /api/v1/deployments/{id}", s.handleDeleteDeployment)
 	mux.HandleFunc("GET /api/v1/deployments/{id}/metrics", s.handleDeploymentMetrics)
 
 	// 资源
 	mux.HandleFunc("GET /api/v1/resources/gpus", s.handleListGPUs)
+
+	// 租户配额（R2-4）
+	mux.HandleFunc("GET /api/v1/quotas", s.handleListQuotas)
+	mux.HandleFunc("PUT /api/v1/quotas/{tenantId}", s.handleSetQuota)
+
+	// 审计日志（R2-4）
+	mux.HandleFunc("GET /api/v1/audit", s.handleListAudit)
 
 	return middleware.WithRequestID(
 		middleware.Recover(s.logger,
@@ -86,13 +97,16 @@ func (s *Server) handleListDeployments(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGetDeployment(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	d, err := s.deployments.GetDeployment(id)
+	d, podStatus, err := s.deployments.GetDeploymentWithK8sStatus(r.Context(), id)
 	if err != nil {
 		apitypes.WriteResult(w, r, nil, err)
 		return
 	}
 	// 附加事件
-	view := apitypes.DeploymentView{ModelDeployment: *d}
+	view := apitypes.DeploymentView{
+		ModelDeployment: *d,
+		PodStatus:       podStatus,
+	}
 	events := s.repo.Events(id)
 	for _, e := range events {
 		view.Events = append(view.Events, apitypes.EventView{
@@ -121,6 +135,22 @@ func (s *Server) handleScaleDeployment(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRestartDeployment(w http.ResponseWriter, r *http.Request) {
 	d, err := s.deployments.RestartDeployment(r.Context(), r.PathValue("id"))
+	if err != nil {
+		apitypes.WriteResult(w, r, nil, err)
+		return
+	}
+	apitypes.WriteResult(w, r, d, nil)
+}
+
+func (s *Server) handleUpgradeDeployment(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ModelVersionID string `json:"modelVersionId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ModelVersionID == "" {
+		apitypes.WriteResult(w, r, nil, errcode.New(errcode.ErrBadRequest, "modelVersionId 必填"))
+		return
+	}
+	d, err := s.deployments.UpgradeDeployment(r.Context(), r.PathValue("id"), req.ModelVersionID)
 	if err != nil {
 		apitypes.WriteResult(w, r, nil, err)
 		return
@@ -175,6 +205,51 @@ func (s *Server) handleListGPUs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	apitypes.WriteResult(w, r, apitypes.GPUResourcesView{Summary: *summary, Nodes: nodes}, nil)
+}
+
+// ---- 租户配额（R2-4） ----
+
+func (s *Server) handleListQuotas(w http.ResponseWriter, r *http.Request) {
+	list, err := s.quotas.List()
+	if err != nil {
+		apitypes.WriteResult(w, r, nil, err)
+		return
+	}
+	apitypes.WriteResult(w, r, list, nil)
+}
+
+func (s *Server) handleSetQuota(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		GPUType string `json:"gpuType"`
+		Quota   int32  `json:"quota"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		apitypes.WriteResult(w, r, nil, errcode.New(errcode.ErrBadRequest, "请求体解析失败: "+err.Error()))
+		return
+	}
+	q, err := s.quotas.Set(r.PathValue("tenantId"), req.GPUType, req.Quota)
+	if err != nil {
+		apitypes.WriteResult(w, r, nil, err)
+		return
+	}
+	apitypes.WriteResult(w, r, q, nil)
+}
+
+// ---- 审计日志（R2-4） ----
+
+func (s *Server) handleListAudit(w http.ResponseWriter, r *http.Request) {
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	list, err := s.audit.List(limit)
+	if err != nil {
+		apitypes.WriteResult(w, r, nil, err)
+		return
+	}
+	apitypes.WriteResult(w, r, list, nil)
 }
 
 // 辅助：确保 domain 引用（类型断言场景预留）

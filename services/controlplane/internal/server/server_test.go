@@ -31,7 +31,7 @@ func (m *mockModelClient) GetVersion(ctx context.Context, versionID string) (*do
 		GPUType:     "A100",
 		GPUCount:    1,
 		MemoryMB:    32768,
-		Status:      domain.ModelStatusValidated,
+		Status:      domain.ModelStatusReleased,
 	}, nil
 }
 
@@ -75,6 +75,17 @@ func (m *mockKubeClient) GetDeployment(ctx context.Context, name, namespace stri
 	}, nil
 }
 
+func (m *mockKubeClient) ListDeployments(ctx context.Context, namespace string) ([]*clients.K8sDeploymentResult, error) {
+	out := make([]*clients.K8sDeploymentResult, 0, len(m.deploys))
+	for name, r := range m.deploys {
+		out = append(out, &clients.K8sDeploymentResult{
+			DeploymentID: name,
+			Status:       &clients.K8sDeploymentStatus{Replicas: r, ReadyReplicas: r, Condition: "Available"},
+		})
+	}
+	return out, nil
+}
+
 func (m *mockKubeClient) ScaleDeployment(ctx context.Context, name, namespace string, replicas int32) (*clients.K8sDeploymentResult, error) {
 	m.deploys[name] = replicas
 	return &clients.K8sDeploymentResult{
@@ -93,10 +104,15 @@ func newTestServer(t *testing.T) (http.Handler, data.DeploymentRepository) {
 	repo := data.NewMemoryDeploymentRepository()
 	models := &mockModelClient{}
 	kube := newMockKube()
-	deployUse := biz.NewDeploymentUseCase(repo, models, kube)
-	resUse := biz.NewResourceUseCase(kube)
 	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
-	return NewServer(deployUse, resUse, repo, logger).Handler(), repo
+	quotaStore := data.NewMemoryQuotaStore()
+	quotaUse := biz.NewQuotaUseCase(quotaStore, logger)
+	auditUse := biz.NewAuditUseCase(data.NewMemoryAuditStore(), logger)
+	deployUse := biz.NewDeploymentUseCase(repo, models, kube)
+	deployUse.SetQuota(quotaUse)
+	deployUse.SetAudit(auditUse)
+	resUse := biz.NewResourceUseCase(kube)
+	return NewServer(deployUse, resUse, quotaUse, auditUse, repo, logger).Handler(), repo
 }
 
 func doJSON(t *testing.T, h http.Handler, method, path string, body interface{}) (*apitypes.Response, int) {

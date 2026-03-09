@@ -166,6 +166,7 @@ type K8sDeploymentStatus struct {
 // K8sDeploymentResult 部署查询结果
 type K8sDeploymentResult struct {
 	DeploymentID string               `json:"deploymentId"`
+	Name         string               `json:"name"` // 部署名（k8sadapter 返回，R2-2 孤儿检测用）
 	Status       *K8sDeploymentStatus `json:"status"`
 	Endpoint     string               `json:"endpoint"`
 	Message      string               `json:"message"`
@@ -198,6 +199,15 @@ func (c *K8sAdapterClient) GetDeployment(ctx context.Context, name, namespace st
 		return nil, err
 	}
 	return &res, nil
+}
+
+// ListDeployments 扫描全部受管部署（R2-2：重启对账/孤儿回收）
+func (c *K8sAdapterClient) ListDeployments(ctx context.Context, namespace string) ([]*K8sDeploymentResult, error) {
+	var list []*K8sDeploymentResult
+	if err := c.do(ctx, http.MethodGet, "/v1/deployments?namespace="+namespace, nil, &list); err != nil {
+		return nil, err
+	}
+	return list, nil
 }
 
 // ScaleDeployment 扩缩容
