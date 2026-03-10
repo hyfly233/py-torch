@@ -1,5 +1,6 @@
 // controlplane 控制面服务入口。
 // 编排模型注册、GPU 资源、部署生命周期，提供 REST API。
+// 存储支持内存（--storage=memory，默认）或 Postgres（--storage=postgres）。
 package main
 
 import (
@@ -12,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"kk-infra/lib/store"
 	"kk-infra/services/controlplane/internal/biz"
 	"kk-infra/services/controlplane/internal/clients"
 	"kk-infra/services/controlplane/internal/data"
@@ -24,23 +26,50 @@ func main() {
 	modelRegistry := flag.String("model-registry", "http://127.0.0.1:8081", "modelregistry 地址")
 	k8sAdapter := flag.String("k8s-adapter", "http://127.0.0.1:8082", "k8sadapter 地址")
 	deploymentImage := flag.String("deployment-image", "", "部署使用的模型镜像（默认 k8sadapter 决定）")
-	obsURL := flag.String("observability-url", "", "observability 服务地址（如 http://localhost:8084），为空则指标返回占位")
+	observabilityURL := flag.String("observability-url", "http://127.0.0.1:8084", "observability 服务地址（GPU 指标转发）")
+	storage := flag.String("storage", "memory", "存储后端: memory | postgres")
 	flag.Parse()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	logger.Info("controlplane 启动", "addr", *addr, "storage", *storage,
+		"observability", *observabilityURL)
 
-	repo := data.NewMemoryDeploymentRepository()
+	var repo data.DeploymentRepository
+	var quotaStore data.QuotaStore
+	var auditStore data.AuditStore
+	if *storage == "postgres" {
+		db, err := store.Open(store.DefaultConfig())
+		if err != nil {
+			logger.Error("连接 Postgres 失败", "err", err)
+			os.Exit(1)
+		}
+		if err := store.MigrateAll(db); err != nil {
+			logger.Error("执行 migration 失败", "err", err)
+			os.Exit(1)
+		}
+		repo = data.NewPostgresDeploymentRepository(db)
+		quotaStore = data.NewPostgresQuotaStore(db)
+		auditStore = data.NewPostgresAuditStore(db)
+		logger.Info("使用 Postgres 存储", "db", store.DefaultConfig().DBName)
+	} else {
+		repo = data.NewMemoryDeploymentRepository()
+		quotaStore = data.NewMemoryQuotaStore()
+		auditStore = data.NewMemoryAuditStore()
+		logger.Info("使用内存存储")
+	}
+
 	modelClient := clients.NewModelRegistryClient(*modelRegistry)
 	kubeClient := clients.NewK8sAdapterClient(*k8sAdapter)
 
 	deployUse := biz.NewDeploymentUseCase(repo, modelClient, kubeClient)
 	deployUse.SetDeploymentImage(*deploymentImage)
+	// R2-4：启用租户配额 + 审计
+	quotaUse := biz.NewQuotaUseCase(quotaStore, logger)
+	deployUse.SetQuota(quotaUse)
+	auditUse := biz.NewAuditUseCase(auditStore, logger)
+	deployUse.SetAudit(auditUse)
 	resUse := biz.NewResourceUseCase(kubeClient)
-	srv := server.NewServer(deployUse, resUse, repo, logger)
-	if *obsURL != "" {
-		srv.SetObservabilityClient(clients.NewObservabilityClient(*obsURL))
-		logger.Info("可观测性接入", "observability", *obsURL)
-	}
+	srv := server.NewServer(deployUse, resUse, quotaUse, auditUse, repo, logger)
 
 	// Reconciler：每 3 秒对账一次
 	reconciler := worker.NewReconciler(repo, deployUse, logger, 3*time.Second)
