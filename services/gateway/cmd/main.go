@@ -1,10 +1,12 @@
 // gateway AI 网关服务入口。
 // 提供 OpenAI 兼容 API：/v1/models、/v1/chat/completions（含流式）。
+// API Key 存储支持内存（默认）或 Postgres。
 package main
 
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -12,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"kk-infra/lib/store"
 	"kk-infra/services/gateway/internal/auth"
 	"kk-infra/services/gateway/internal/proxy"
 	"kk-infra/services/gateway/internal/router"
@@ -22,21 +25,45 @@ import (
 func main() {
 	addr := flag.String("addr", ":8083", "监听地址")
 	ratePerMinute := flag.Int("rate-per-minute", 0, "每租户每分钟限流（0=不限）")
-	obsURL := flag.String("observability-url", "", "observability 服务地址（如 http://localhost:8084），为空则不上报指标")
+	storage := flag.String("storage", "memory", "存储后端: memory | postgres")
+	observabilityURL := flag.String("observability-url", "", "observability 服务地址（指标上报，空则跳过）")
 	flag.Parse()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	logger.Info("gateway 启动", "addr", *addr, "storage", *storage)
 
-	keys := auth.NewManager()
-	routes := router.NewTable()
-
-	// 指标上报：配置 observability 地址时启用
-	var m proxy.MetricsSink
-	if *obsURL != "" {
-		m = sink.NewHTTPSink(*obsURL, logger)
-		logger.Info("指标上报已启用", "observability", *obsURL)
+	var keys *auth.Manager
+	if *storage == "postgres" {
+		db, err := store.Open(store.DefaultConfig())
+		if err != nil {
+			logger.Error("连接 Postgres 失败", "err", err)
+			os.Exit(1)
+		}
+		if err := store.MigrateAll(db); err != nil {
+			logger.Error("执行 migration 失败", "err", err)
+			os.Exit(1)
+		}
+		keys = auth.NewManagerWithStore(auth.NewPostgresStore(db))
+		logger.Info("使用 Postgres API Key 存储")
+	} else {
+		keys = auth.NewManager()
+		logger.Info("使用内存 API Key 存储")
 	}
-	p := proxy.NewProxy(routes, logger, m)
+
+	routes := router.NewTable()
+	var metricsSink proxy.MetricsSink
+	if *observabilityURL != "" {
+		metricsSink = sink.NewHTTPSink(*observabilityURL, logger)
+		logger.Info("指标上报到 observability", "url", *observabilityURL)
+	}
+	p := proxy.NewProxy(routes, logger, metricsSink)
+	// R2-4：模型授权（API Key 白名单）
+	p.SetAuthorize(func(ctx context.Context, apiKey, model string) error {
+		if !keys.CanAccess(apiKey, model) {
+			return fmt.Errorf("API Key 无权访问模型 %s", model)
+		}
+		return nil
+	})
 	if *ratePerMinute > 0 {
 		p.RatePerMinute = *ratePerMinute
 	}

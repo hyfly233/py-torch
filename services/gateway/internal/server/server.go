@@ -48,6 +48,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/keys", s.handleListKeys)
 	mux.HandleFunc("POST /api/v1/keys/{keyId}/disable", s.handleDisableKey)
 	mux.HandleFunc("POST /api/v1/keys/{keyId}/rotate", s.handleRotateKey)
+	mux.HandleFunc("POST /api/v1/keys/{keyId}/models", s.handleSetKeyModels)
 
 	return middleware.WithRequestID(
 		middleware.Recover(s.logger,
@@ -74,8 +75,9 @@ func (s *Server) authRequired(next http.HandlerFunc) http.HandlerFunc {
 			s.writeKeyErr(w, r, status, "API Key 无效或已禁用")
 			return
 		}
-		// 注入租户到 context
+		// 注入租户 + API Key 到 context（R2-4 模型授权用）
 		ctx := withTenant(r.Context(), tenant)
+		ctx = withAPIKey(ctx, key)
 		next(w, r.WithContext(ctx))
 	}
 }
@@ -179,6 +181,22 @@ func (s *Server) handleRotateKey(w http.ResponseWriter, r *http.Request) {
 	apitypes.WriteResult(w, r, res, nil)
 }
 
+// handleSetKeyModels 设置 Key 的模型白名单（R2-4 模型授权）
+func (s *Server) handleSetKeyModels(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Models []string `json:"models"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		apitypes.WriteResult(w, r, nil, errcode.New(errcode.ErrBadRequest, "请求体解析失败: "+err.Error()))
+		return
+	}
+	if err := s.keys.SetModels(r.PathValue("keyId"), req.Models); err != nil {
+		apitypes.WriteResult(w, r, nil, errcode.New(errcode.ErrNotFound, "Key 不存在"))
+		return
+	}
+	apitypes.WriteResult(w, r, map[string]bool{"updated": true}, nil)
+}
+
 // writeKeyErr 鉴权错误响应（OpenAI 风格）
 func (s *Server) writeKeyErr(w http.ResponseWriter, r *http.Request, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
@@ -202,6 +220,20 @@ func withTenant(ctx context.Context, tenant string) context.Context {
 
 func tenantFrom(ctx context.Context) string {
 	if v, ok := ctx.Value(tenantCtxKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// API Key context（R2-4 模型授权）
+type apiKeyCtxKey struct{}
+
+func withAPIKey(ctx context.Context, key string) context.Context {
+	return context.WithValue(ctx, apiKeyCtxKey{}, key)
+}
+
+func apiKeyFrom(ctx context.Context) string {
+	if v, ok := ctx.Value(apiKeyCtxKey{}).(string); ok {
 		return v
 	}
 	return ""

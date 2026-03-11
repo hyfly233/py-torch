@@ -3,6 +3,7 @@ package proxy
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,18 +23,28 @@ type MetricsSink interface {
 	Record(deploymentID, model string, latencyMs int64, ttftMs int64, tokens int, err bool)
 }
 
+// AuthorizeFunc 模型授权回调（R2-4：API Key 模型白名单）。
+// 返回 nil 表示允许，返回错误表示拒绝（错误信息透传给客户端）。
+type AuthorizeFunc func(ctx context.Context, apiKey, model string) error
+
 // Proxy 推理代理
 type Proxy struct {
 	routes  *router.Table
 	client  *http.Client
 	logger  *slog.Logger
 	metrics MetricsSink
+	authorize AuthorizeFunc // 可为 nil（不校验模型授权）
 
 	// 租户限流（简单令牌桶：每分钟 N 请求）
 	mu     sync.Mutex
 	limits map[string]*rateLimiter
 	// 限流配置：每分钟请求数，0=不限
 	RatePerMinute int
+}
+
+// SetAuthorize 设置模型授权回调（R2-4）
+func (p *Proxy) SetAuthorize(fn AuthorizeFunc) {
+	p.authorize = fn
 }
 
 type rateLimiter struct {
@@ -78,6 +89,16 @@ func (p *Proxy) Forward(w http.ResponseWriter, r *http.Request, tenantID string)
 	if chat.Model == "" {
 		writeErr(w, http.StatusBadRequest, "model 字段必填")
 		return
+	}
+
+	// R2-4：模型授权（API Key 白名单）
+	if p.authorize != nil {
+		apiKey := r.Header.Get("Authorization")
+		apiKey = strings.TrimPrefix(apiKey, "Bearer ")
+		if err := p.authorize(r.Context(), apiKey, chat.Model); err != nil {
+			writeErr(w, http.StatusForbidden, err.Error())
+			return
+		}
 	}
 
 	// 限流
