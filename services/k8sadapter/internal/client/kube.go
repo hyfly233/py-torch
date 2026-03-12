@@ -30,6 +30,7 @@ type DeploymentSpec struct {
 // DeploymentResult 创建/查询结果
 type DeploymentResult struct {
 	DeploymentID string               `json:"deploymentId"`
+	Name         string               `json:"name"` // 部署名（R2-2 孤儿检测用）
 	Status       *k8s.DeploymentStatus `json:"status"`
 	Pods         []k8s.Pod             `json:"pods"`
 	Events       []k8s.Event           `json:"events"`
@@ -45,6 +46,8 @@ type KubeClient interface {
 	CreateDeployment(ctx context.Context, spec *DeploymentSpec) (*DeploymentResult, error)
 	// GetDeployment 查询部署状态（含 Pod/事件）
 	GetDeployment(ctx context.Context, name, namespace string) (*DeploymentResult, error)
+	// ListDeployments 按 owner label 扫描全部受管部署（R2-2：重启对账/孤儿回收）
+	ListDeployments(ctx context.Context, namespace string) ([]*DeploymentResult, error)
 	// ScaleDeployment 调整副本数
 	ScaleDeployment(ctx context.Context, name, namespace string, replicas int32) (*DeploymentResult, error)
 	// DeleteDeployment 幂等删除（资源不存在返回成功）

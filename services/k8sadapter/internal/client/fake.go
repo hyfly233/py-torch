@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -205,6 +206,7 @@ func (f *FakeKubeClient) GetDeployment(ctx context.Context, name, namespace stri
 	endpoint := fmt.Sprintf("%s.%s.svc.cluster.local", name, namespace)
 	return &DeploymentResult{
 		DeploymentID: spec.DeploymentID,
+		Name:         name,
 		Status:       &status,
 		Pods:         pods,
 		Events:       events,
@@ -259,6 +261,27 @@ func (f *FakeKubeClient) simulateEvents(name, namespace string, stage int, messa
 		events = append(events, k8s.Event{Type: "Normal", Reason: "Created", Message: "容器创建成功", LastTime: time.Now().Format(time.RFC3339)})
 	}
 	return events
+}
+
+// ListDeployments 列出 Fake 集群中全部受管部署（R2-2）
+func (f *FakeKubeClient) ListDeployments(ctx context.Context, namespace string) ([]*DeploymentResult, error) {
+	f.mu.RLock()
+	var names []string
+	for k := range f.deploys {
+		parts := strings.SplitN(k, "/", 2)
+		if len(parts) == 2 && (namespace == "" || parts[0] == namespace) {
+			names = append(names, parts[1])
+		}
+	}
+	f.mu.RUnlock()
+	out := make([]*DeploymentResult, 0, len(names))
+	for _, n := range names {
+		res, err := f.GetDeployment(ctx, n, namespace)
+		if err == nil {
+			out = append(out, res)
+		}
+	}
+	return out, nil
 }
 
 // ScaleDeployment 扩缩容

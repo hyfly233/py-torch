@@ -228,12 +228,35 @@ func (c *RealKubeClient) GetDeployment(ctx context.Context, name, namespace stri
 	endpoint := fmt.Sprintf("%s.%s.svc.cluster.local", name, ns)
 	return &DeploymentResult{
 		DeploymentID: dep.Metadata.Labels["carrot.ai/deployment-id"],
+		Name:         name,
 		Status:       st,
 		Pods:         pods,
 		Events:       events,
 		Endpoint:     endpoint,
 		Message:      st.Message,
 	}, nil
+}
+
+// ListDeployments 按 owner label 扫描全部受管部署（R2-2）
+func (c *RealKubeClient) ListDeployments(ctx context.Context, namespace string) ([]*DeploymentResult, error) {
+	ns := namespace
+	if ns == "" {
+		ns = c.namespace
+	}
+	var list deploymentList
+	labelSelector := "carrot.ai%2Fmanaged-by%3Dcarrot"
+	path := "/apis/apps/v1/namespaces/" + ns + "/deployments?labelSelector=" + labelSelector
+	if err := c.do(ctx, "GET", path, nil, &list); err != nil {
+		return nil, fmt.Errorf("扫描部署失败: %w", err)
+	}
+	out := make([]*DeploymentResult, 0, len(list.Items))
+	for _, item := range list.Items {
+		res, err := c.GetDeployment(ctx, item.Metadata.Name, ns)
+		if err == nil {
+			out = append(out, res)
+		}
+	}
+	return out, nil
 }
 
 // ScaleDeployment 更新副本数（merge patch）
