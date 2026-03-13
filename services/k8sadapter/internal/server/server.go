@@ -33,6 +33,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/resources/gpus", s.handleListGPUs)
 	mux.HandleFunc("POST /v1/deployments", s.handleCreateDeployment)
 	mux.HandleFunc("GET /v1/deployments/{name}", s.handleGetDeployment)
+	mux.HandleFunc("GET /v1/deployments", s.handleListDeployments)
 	mux.HandleFunc("POST /v1/deployments/{name}/scale", s.handleScaleDeployment)
 	mux.HandleFunc("DELETE /v1/deployments/{name}", s.handleDeleteDeployment)
 	return middleware.WithRequestID(
@@ -92,6 +93,21 @@ func (s *Server) handleGetDeployment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	apitypes.WriteResult(w, r, res, nil)
+}
+
+func (s *Server) handleListDeployments(w http.ResponseWriter, r *http.Request) {
+	ns := r.URL.Query().Get("namespace")
+	if ns == "" {
+		ns = "default"
+	}
+	ctx, cancel := s.reqCtx(r)
+	defer cancel()
+	list, err := s.kube.ListDeployments(ctx, ns)
+	if err != nil {
+		apitypes.WriteResult(w, r, nil, errcode.Wrap(errcode.ErrInternal, "扫描部署失败", err))
+		return
+	}
+	apitypes.WriteResult(w, r, list, nil)
 }
 
 func (s *Server) handleScaleDeployment(w http.ResponseWriter, r *http.Request) {
