@@ -133,18 +133,38 @@ func (r *Registry) ListVersions(modelID string) ([]*domain.ModelVersion, error) 
 	return r.repo.ListVersions(modelID)
 }
 
-// ValidateVersion 标记版本校验通过（模拟校验流程，真实校验在 pipeline 阶段）
+// ValidateVersion 标记版本校验通过（REGISTERED → VALIDATED）
 func (r *Registry) ValidateVersion(versionID string) (*domain.ModelVersion, error) {
 	v, err := r.repo.GetVersion(versionID)
 	if err != nil {
 		return nil, data.ToErrCode(err)
 	}
-	if v.Status != domain.ModelStatusRegistered {
-		return nil, errcode.New(errcode.ErrIllegalState, "版本状态为 "+v.Status+"，仅 REGISTERED 可校验")
+	if !domain.CanTransitionVersion(v.Status, domain.ModelStatusValidated) {
+		return nil, errcode.New(errcode.ErrIllegalState,
+			"版本状态为 "+v.Status+"，无法流转到 VALIDATED")
 	}
 	if err := r.repo.UpdateVersionStatus(versionID, domain.ModelStatusValidated); err != nil {
 		return nil, data.ToErrCode(err)
 	}
+	v.Status = domain.ModelStatusValidated
+	return v, nil
+}
+
+// ReleaseVersion 发布版本（VALIDATED → RELEASED）。
+// 发布后版本可部署；发布记录写入 audit（由调用方记录）。
+func (r *Registry) ReleaseVersion(versionID string) (*domain.ModelVersion, error) {
+	v, err := r.repo.GetVersion(versionID)
+	if err != nil {
+		return nil, data.ToErrCode(err)
+	}
+	if !domain.CanTransitionVersion(v.Status, domain.ModelStatusReleased) {
+		return nil, errcode.New(errcode.ErrIllegalState,
+			"版本状态为 "+v.Status+"，仅 VALIDATED 可发布")
+	}
+	if err := r.repo.UpdateVersionStatus(versionID, domain.ModelStatusReleased); err != nil {
+		return nil, data.ToErrCode(err)
+	}
+	v.Status = domain.ModelStatusReleased
 	return v, nil
 }
 

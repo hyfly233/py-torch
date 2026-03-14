@@ -38,6 +38,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/models/{id}/versions", s.handleListVersions)
 	mux.HandleFunc("GET /api/v1/versions/{versionId}", s.handleGetVersion)
 	mux.HandleFunc("POST /api/v1/versions/{versionId}/validate", s.handleValidateVersion)
+	mux.HandleFunc("POST /api/v1/versions/{versionId}/release", s.handleReleaseVersion)
 	mux.HandleFunc("DELETE /api/v1/models/{id}/versions/{version}", s.handleDeleteVersion)
 
 	// 中间件链：RequestID → Recover → 访问日志
@@ -97,6 +98,11 @@ func (s *Server) handleGetVersion(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleValidateVersion(w http.ResponseWriter, r *http.Request) {
 	v, err := s.registry.ValidateVersion(r.PathValue("versionId"))
+	apitypes.WriteResult(w, r, v, err)
+}
+
+func (s *Server) handleReleaseVersion(w http.ResponseWriter, r *http.Request) {
+	v, err := s.registry.ReleaseVersion(r.PathValue("versionId"))
 	apitypes.WriteResult(w, r, v, err)
 }
 
