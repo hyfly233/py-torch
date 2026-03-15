@@ -8,7 +8,9 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -17,17 +19,24 @@ import (
 	"kk-infra/lib/errcode"
 	"kk-infra/lib/middleware"
 	"kk-infra/services/observability/internal/metrics"
+	"kk-infra/services/observability/internal/prometheus"
 )
 
 // Server observability HTTP 服务
 type Server struct {
 	store  *metrics.Store
 	logger *slog.Logger
+	prom   *prometheus.Client // 可为 nil（无 Prometheus 时降级内存存储）
 }
 
 // NewServer 创建 HTTP 服务。
 func NewServer(store *metrics.Store, logger *slog.Logger) *Server {
 	return &Server{store: store, logger: logger}
+}
+
+// SetPrometheus 配置 Prometheus 查询客户端（R2-3：配置后查询走 Prometheus）
+func (s *Server) SetPrometheus(c *prometheus.Client) {
+	s.prom = c
 }
 
 // Handler 返回带中间件的路由。
@@ -138,17 +147,49 @@ func (s *Server) handleDeploymentMetrics(w http.ResponseWriter, r *http.Request)
 }
 
 // handleGPUMetrics 查询 GPU 利用率序列（按节点）。
+// R2-3：配置 Prometheus 时用 DCGM 指标（gpu_utilization），否则降级内存。
 func (s *Server) handleGPUMetrics(w http.ResponseWriter, r *http.Request) {
-	rg := metrics.ParseRange(r.URL.Query().Get("range"), time.Now())
+	rangeStr := r.URL.Query().Get("range")
+	rg := metrics.ParseRange(rangeStr, time.Now())
+	if rangeStr == "" {
+		rangeStr = "1h"
+	}
+	// Prometheus 模式：DCGM 指标
+	if s.prom != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		res, err := s.prom.QueryRange(ctx,
+			`avg by (instance) (dcgm_gpu_utilization)`,
+			rg.From, rg.To, time.Minute)
+		if err != nil {
+			s.logger.Warn("Prometheus GPU 查询失败，降级内存", "err", err)
+		} else {
+			var pts []apitypes.MetricPoint
+			if len(res.Data.Result) > 0 {
+				for _, v := range res.Data.Result[0].Values {
+					if len(v) == 2 {
+						if ts, ok := v[0].(float64); ok {
+							if val, err := parseFloat(v[1]); err == nil {
+								pts = append(pts, apitypes.MetricPoint{Ts: int64(ts), Val: val})
+							}
+						}
+					}
+				}
+			}
+			apitypes.WriteResult(w, r, apitypes.MetricsView{
+				DeploymentID: "gpu",
+				Range:        rangeStr,
+				Series:       []apitypes.MetricSeries{{Name: "gpuUtil", Points: pts}},
+			}, nil)
+			return
+		}
+	}
+	// 内存降级
 	gs := s.store.GPUMetrics(rg)
 	buckets := gs.AvgGPUUtil()
-
 	view := apitypes.MetricsView{
 		DeploymentID: "gpu",
-		Range:        r.URL.Query().Get("range"),
-	}
-	if r.URL.Query().Get("range") == "" {
-		view.Range = "1h"
+		Range:        rangeStr,
 	}
 	if len(buckets) == 0 {
 		view.Series = []apitypes.MetricSeries{}
@@ -159,6 +200,20 @@ func (s *Server) handleGPUMetrics(w http.ResponseWriter, r *http.Request) {
 		{Name: "gpuUtil", Points: seriesPoints(buckets, func(b metrics.Bucket) float64 { return float64(b.LatencySum) })},
 	}
 	apitypes.WriteResult(w, r, view, nil)
+}
+
+// parseFloat 解析 Prometheus 字符串数值
+func parseFloat(v interface{}) (float64, error) {
+	switch val := v.(type) {
+	case string:
+		var f float64
+		_, err := fmt.Sscanf(val, "%f", &f)
+		return f, err
+	case float64:
+		return val, nil
+	default:
+		return 0, fmt.Errorf("unexpected value type: %T", v)
+	}
 }
 
 func seriesPoints(buckets []metrics.Bucket, f func(metrics.Bucket) float64) []apitypes.MetricPoint {

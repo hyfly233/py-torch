@@ -15,6 +15,7 @@ import (
 	"kk-infra/lib/apitypes"
 	"kk-infra/services/observability/internal/collector"
 	"kk-infra/services/observability/internal/metrics"
+	"kk-infra/services/observability/internal/prometheus"
 	"kk-infra/services/observability/internal/server"
 )
 
@@ -22,12 +23,19 @@ func main() {
 	addr := flag.String("addr", ":8084", "监听地址")
 	retention := flag.Duration("retention", 2*time.Hour, "指标保留窗口")
 	controlplaneURL := flag.String("controlplane-url", "", "controlplane 地址（如 http://localhost:8080），配置后启用 GPU 指标采集")
+	prometheusURL := flag.String("prometheus-url", "", "Prometheus 地址（如 http://localhost:9090），配置后 GPU 查询走 DCGM 指标")
 	flag.Parse()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
 	store := metrics.NewStore(*retention)
 	srv := server.NewServer(store, logger)
+
+	// R2-3：Prometheus adapter（DCGM 指标查询）
+	if *prometheusURL != "" {
+		srv.SetPrometheus(prometheus.NewClient(*prometheusURL))
+		logger.Info("Prometheus 查询已启用", "url", *prometheusURL)
+	}
 
 	// GPU 指标采集：定期从 controlplane 拉取 GPU 资源状态
 	if *controlplaneURL != "" {
