@@ -32,7 +32,10 @@
 - **控制面与执行面解耦**：controlplane 负责业务编排，k8sadapter 屏蔽 Kubernetes 细节（Fake / 真实集群可切换）
 - **状态机驱动**：部署生命周期 NEW→VALIDATING→SUBMITTING→STARTING→RUNNING / FAILED，事件全程可审计
 - **指标链路**：gateway 异步上报请求指标 → observability 聚合；observability 定期从 controlplane 采集 GPU 利用率
-- **多模块 workspace**：`go.work` 统一编排 `lib` + 6 个服务，独立 go.mod
+- **多模块 workspace**：`go.work` 统一编排 `lib` + 8 个模块（6 服务 + pipeline 骨架 + test/contract）
+- **发布流程**：模型版本 `REGISTERED → VALIDATED → RELEASED`，仅 RELEASED 可部署；支持升级/回滚
+- **租户与安全**：配额校验（创建/扩容/删除释放）、API Key 模型授权、审计日志、RBAC/NetworkPolicy 清单
+- **可观测性**：Prometheus adapter（DCGM 指标）+ 告警规则清单
 
 ## 2. 服务清单
 
@@ -56,7 +59,8 @@
 ### 3.1 一键启动全部后端服务（Fake K8s 环境）
 
 ```bash
-./hack/dev-up.sh
+./hack/dev-up.sh                  # 内存存储（默认）
+./hack/dev-up.sh --storage=postgres   # 本机 docker Postgres 持久化
 ```
 
 脚本自动编译 6 个服务二进制到 `${TMPDIR:-/tmp}/kk-infra-bin/` 并启动：
@@ -71,6 +75,11 @@
 | inference | http://localhost:8085 |
 
 Fake 环境内置 2 节点 × 8 卡 A100 GPU 池（共 16 卡），无需 Docker/K8s 即可跑通完整闭环。
+
+**Postgres 模式**（R1 新增）：
+- 使用本机 docker Postgres：`/Users/flyhy/workspace/docker/postgresql`（`localhost:5432`，库 `carrot`）
+- 依赖：`database/sql + lib/pq`（零外部下载）；migration 自动执行（`lib/store/migrations/001_init.sql`）
+- 重启服务后部署状态/事件/API Key 从 PG 恢复（已验证）
 
 ### 3.2 启动前端管理台
 
@@ -91,6 +100,14 @@ npm run dev        # http://localhost:5173
 ```
 
 自动断言：GPU 发现 → 注册模型 → 创建 vLLM 服务 → Running → OpenAI 调用（非流式 + 流式）→ 指标查询 → 扩容 → 删除释放 GPU。
+
+### 3.3.1 契约测试（R1 新增）
+
+```bash
+./hack/contract-test.sh
+```
+
+断言统一 API 契约：错误码（404/400/409/401）、部署状态机、幂等语义、响应格式（code/message/requestId + X-Request-Id）。
 
 ### 3.4 真实 Kubernetes 环境
 

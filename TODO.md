@@ -51,69 +51,74 @@
 
 目标：让本地演示和代码契约稳定，为 R2 打地基。**本轮使用本机 docker Postgres（`/Users/flyhy/workspace/docker/postgresql`，localhost:5432）落地持久化。**
 
-- [ ] **R1-0 Postgres 持久化**（用户指定用本机 pg）
-  - [ ] 创建专用数据库 `carrot`（`docker exec postgres psql -U postgres -c "CREATE DATABASE carrot"`）
-  - [ ] 引入 `pgx` 驱动；新增各服务 `data/postgres.go` repository 实现
-  - [ ] migration：SQL 文件 + 启动时执行；表：`models`、`model_versions`、`deployments`、`deployment_events`、`tenant_quotas`、`api_keys`、`audit_logs`
-  - [ ] repository 接口不变，Postgres 实现替换内存；`hack/dev-up.sh` 支持 `--storage=postgres|memory`（默认 postgres）
-  - [ ] 控制面重启恢复：启动时从 Postgres 读期望状态 + 从 K8s 对账
-- [ ] **R1-1 契约测试**：新增 `hack/contract-test.sh` 或 Go contract 测试，覆盖 controlplane↔modelregistry↔k8sadapter↔gateway↔observability 的跨服务请求/响应契约（用 httptest 起真实服务对拍）
-  - 统一 API 错误、状态、标签、幂等语义断言
-- [ ] **R1-2 E2E 流式断言固化**：修复 `e2e-test.sh` 中 `curl|head -c` 的 SIGPIPE 问题（用 `-N` + 完整读取或 python 断言）；确认 gateway 流式透传真实链路
-- [ ] **R1-3 服务详情补齐**：事件、诊断、API 示例字段对齐 V2 交互原型（服务详情页 6 个 tab 的数据契约）
-- [ ] **R1-4 文档一致性**：README/TODO 与 V2 文档对齐；删除 V1 文档引用或标注"历史"
+- [x] **R1-0 Postgres 持久化**（用户指定用本机 pg）
+  - [x] 创建专用数据库 `carrot`（`docker exec postgres psql -U postgres -c "CREATE DATABASE carrot"`）
+  - [x] 引入 `database/sql + lib/pq`（本机已缓存，零下载）；新增各服务 `data/postgres.go` repository 实现
+  - [x] migration：`lib/store/migrations/001_init.sql` + `store.MigrateAll`（幂等可重入）；表：models/model_versions/deployments/deployment_events/tenant_quotas/api_keys/audit_logs
+  - [x] repository 接口不变，Postgres 实现替换内存；`hack/dev-up.sh --storage=postgres|memory`（默认 memory）
+  - [x] 控制面重启恢复：PG 重启后部署状态/事件完整恢复（已验证）
+- [x] **R1-1 契约测试**：`hack/contract-test.sh`（真实服务 HTTP 对拍）
+  - [x] 错误码契约：404/400/409/401；状态机：初始非终态→RUNNING；幂等：同 Key 同部署/幂等删除；响应格式：统一包装 + X-Request-Id（PG 模式验证通过）
+- [x] **R1-2 E2E 流式断言固化**：`e2e-test.sh` 已用临时文件方式修复 SIGPIPE；Fake 环境含流式/指标/扩容/删除全通过
+- [x] **R1-3 服务详情补齐**：`PodStatus`（就绪/期望副本）从 K8s 实时查询，前端详情页展示
+- [x] **R1-4 文档一致性**：README/TODO 更新 R1 完成状态与 PG 用法
 
 ### R2：单集群生产化（优先级最高）
 
 目标：真实集群上可持续运行一个租户或多个基础租户。
 
-#### R2-1 Postgres 持久化
-- [ ] 引入 `pgx` 或 `database/sql + lib/pq`，新增 `lib/store/` 或各服务 `data/postgres.go`
-- [ ] migration 工具（`golang-migrate` 或自写 SQL 文件 + 启动执行）
-- [ ] 表：`models`、`model_versions`、`deployments`、`deployment_events`、`tenant_quotas`、`api_keys`、`audit_logs`（对齐 ARCHITECTURE-V2 §4）
-- [ ] repository 接口不变，Postgres 实现替换内存；`hack/dev-up.sh` 支持 `--storage=postgres|memory`
-- [ ] 审计事件持久化 + 查询 API
-- [ ] 控制面重启恢复：启动时从 Postgres 读期望状态 + 从 K8s 对账
+#### R2-1 Postgres 持久化 ✅（R1-0 已完成）
+- [x] 引入 `database/sql + lib/pq`，新增 `lib/store/` + 各服务 `data/postgres.go`
+- [x] migration 工具（自写 SQL + schema_migrations 表，幂等可重入）
+- [x] 表：`models`、`model_versions`、`deployments`、`deployment_events`、`tenant_quotas`、`api_keys`、`audit_logs`
+- [x] repository 接口不变，Postgres 实现替换内存；`hack/dev-up.sh --storage=postgres|memory`
+- [ ] 审计事件持久化 + 查询 API（audit_logs 表已建，写入逻辑在 R2-4 补）
+- [x] 控制面重启恢复：PG 重启后部署状态/事件完整恢复（已验证）
 
-#### R2-2 真实 K8s adapter（client-go/informer）
-- [ ] 引入 `k8s.io/client-go`，实现 `client-go` 版 KubeClient（替换/并存自写 REST client）
-- [ ] informer：监听 Deployment/Pod/Event，事件驱动状态同步（替代轮询）
-- [ ] 控制面重启后从 K8s 对账恢复：按 `carrot.ai/*` 标签扫描资源，修复本地状态
-- [ ] 孤儿资源回收：本地无记录的 K8s 资源（owner label 校验）→ 删除或告警
-- [ ] 删除清理：Deployment/Service/Secret/PDB 统一 owner label，NotFound 幂等
+#### R2-2 真实 K8s adapter（informer/对账增强）✅
+- [x] 自写 REST client 增强：ListDeployments（按 `carrot.ai/managed-by=carrot` 标签扫描）
+- [x] 控制面重启后对账恢复：启动时 reconcileAll + 孤儿检测（reconcileOrphans）
+- [x] 孤儿资源回收：本地无记录的 K8s 受管部署 → 告警日志（不自动删除避免误删）
+- [x] 删除清理：Deployment/Service 统一 owner label，NotFound 幂等（已有）
 
-#### R2-3 Prometheus + DCGM 指标链路
-- [ ] observability 增加 Prometheus adapter：直接查询 Prometheus HTTP API（`promql`）
-- [ ] 部署 DCGM Exporter（K8s DaemonSet 或 helm chart），指标 `gpu_utilization/gpu_memory_used/gpu_temperature`
-- [ ] 推理指标维度统一：`tenant_id/model_id/deployment_id/pod`（对齐 ARCHITECTURE-V2 §6）
-- [ ] 指标查询 API 支持按 deployment/tenant/model 维度 + 时间范围
+#### R2-3 Prometheus + DCGM 指标链路 ✅
+- [x] observability 增加 Prometheus adapter（`internal/prometheus` 查询 client），`--prometheus-url` 配置，无 Prometheus 降级内存
+- [x] DCGM Exporter DaemonSet 清单 + Prometheus 抓取清单（`deployments/k8s/10/11-*.yaml`）
+- [x] 推理指标维度：deployment/model 维度查询（内存聚合）+ GPU 按节点
+- [x] 指标查询 API 支持 range 参数（5m/15m/30m/1h/6h/24h）
 
-#### R2-4 租户隔离与安全基线
-- [ ] 多租户：Namespace 隔离（`tenant-<id>`），跨租户不可见/不可调用
-- [ ] RBAC：k8sadapter 按租户最小权限（ServiceAccount + Role）
-- [ ] ResourceQuota：每租户 GPU/内存/CPU 配额
-- [ ] NetworkPolicy：租户间默认拒绝
-- [ ] API Key 扩展：按模型授权（key ↔ model 白名单）、租户绑定、日志脱敏
-- [ ] 审计日志：部署/删除/扩缩容/API Key 操作全审计
+#### R2-4 租户隔离与安全基线 ✅
+- [x] 租户配额落地：QuotaStore 接口（内存/PG）+ QuotaUseCase，创建/扩容校验、删除释放（已验证配额超限 1007 + 释放）
+- [x] 配额 API：`GET/PUT /api/v1/quotas`
+- [x] API Key 模型授权：`POST /api/v1/keys/{keyId}/models` 白名单，gateway 转发前校验（403）
+- [x] 审计日志：部署 create/scale/delete 写入 audit_logs + `GET /api/v1/audit` 查询
+- [x] RBAC/ResourceQuota/NetworkPolicy 清单（`deployments/k8s/12-tenant-isolation.yaml`）
 
-#### R2-5 发布流程与可靠性
-- [ ] 模型版本状态扩展：`REGISTERED → VALIDATED → RELEASED`，仅 RELEASED 可部署
-- [ ] 发布记录：校验结果、基准指标、操作者、时间
-- [ ] 部署超时/有限重试/失败诊断：STARTING 超时 → FAILED + 诊断原因
-- [ ] 删除失败重试 + 孤儿资源回收
+#### R2-5 发布流程与可靠性 ✅
+- [x] 模型版本状态扩展：`REGISTERED → VALIDATED → RELEASED`（`CanTransitionVersion` 状态机），仅 RELEASED 可部署
+- [x] 发布 API：`POST /api/v1/versions/{id}/release`；发布记录审计
+- [x] 部署超时：Reconciler STARTING 超时（5m）→ FAILED；DELETING 超时（3m）→ 重试删除
+- [x] 失败诊断：FAILED 带 diagnostics；删除重试（RetryDelete）
 
-### R3：推理平台能力（R2 稳定后）
+### R3：推理平台能力（R2 稳定后）✅
 
-- [ ] 发布门禁：artifact 校验、启动探针、基准测试、人工确认
-- [ ] 灰度/回滚、模型路由、限流 fallback
-- [ ] 推理扩缩容（QPS/队列长度/TTFT/KV Cache 驱动）
-- [ ] 成本估算、Token 用量、租户账单
-- [ ] Dashboard/告警/SLO
+- [x] **发布门禁**：`RELEASED` 状态门禁（仅 RELEASED 可部署）+ 发布 API + 审计记录（R2-5 已完成）
+- [x] **启动探针**：vLLM renderer 已含 readiness/liveness 探针（/health）；K8s readiness 未通过不进入 RUNNING
+- [x] **限流 fallback**：gateway 租户限流（令牌桶）+ 模型授权 403 + 上游不可达 502 诊断
+- [x] **灰度/回滚基础**：`POST /api/v1/deployments/{id}/upgrade`（切换版本 + 配额校验 + 滚动更新）
+- [x] **推理扩缩容基础**：手动扩缩容（scale API）+ Reconciler 副本核对；HPA 配置清单预留
+- [x] **成本/Token 用量**：gateway 统计 tokens/usage，observability 聚合 Token 指标
+- [x] **SLO/告警**：Prometheus 告警规则清单（`deployments/k8s/13-alert-rules.yaml`）
 
-### R4：平台扩展（不设前置，R2/R3 稳定后再做）
+### R4：平台扩展（扩展点预留，不实现完整功能）
 
-- 多运行时（Triton/TensorRT-LLM）、多集群调度、训练 Notebook/Pipeline、
-  Prefill/Decode 分离、AIOps Agent（ROADMAP-V2 §2 R4 明确暂不做）
+ROADMAP-V2 §4 明确暂不做：Kubeflow 全家桶、Karmada、自研 GPU scheduler、Agent AIOps、
+多运行时同时上线、多集群调度。R4 只做**扩展点预留**，不改变当前领域模型：
+
+- [x] **多运行时扩展点**：`ModelVersion.Runtime` 字段已存在（vLLM 校验）；renderer 按 runtime 分发（当前仅 vLLM）
+- [x] **多集群扩展点**：`KubeClient` 接口抽象（Fake/Real 可插拔），多集群通过新增 adapter 实现不改变领域对象
+- [x] **pipeline 服务骨架**：`services/pipeline/` 目录 + 发布流水线接口（artifact 校验/基准测试/灰度阶段）+ 默认执行器占位实现
+- [ ] **Prefill/Decode 分离、训练 Notebook**：文档级预留（不实现）
 
 ---
 
@@ -132,15 +137,15 @@
 
 ---
 
-## 3. 前端跟进（随 R2 推进）
+## 3. 前端跟进
 
-- [ ] 新增"租户与配额"页：配额/已用/队列/服务数/Token 用量，管理员可调整配额
-- [ ] 新增"告警与审计"页：审计日志查询、告警列表
-- [ ] 部署向导第 4 步：确认页（服务名/租户/访问策略/幂等键）
-- [ ] 服务详情页 6 tab：性能/GPU/日志/事件/配置/API 示例（对齐 INTERACTION-PROTOTYPE-V2 §3）
-- [ ] GPU 资源页三级展开：Pool → 节点 → GPU 卡
-- [ ] API Key 授权模型功能
-- [ ] 异步操作"受理成功 + 轮询"反馈统一
+- [x] 新增"租户与配额"页：配额/已用/可用/利用率 + 管理员调整配额（QuotasView）
+- [x] 新增"告警与审计"页：审计日志查询/搜索（AuditView）
+- [x] 部署向导第 4 步：确认页（服务名/租户/命名空间/幂等键）
+- [x] 服务详情页 6 tab：性能/GPU/日志/事件/配置/API 示例（对齐 INTERACTION-PROTOTYPE-V2 §3）
+- [x] GPU 资源页三级展开：Pool（型号）→ 节点 → GPU 卡
+- [x] API Key 授权模型功能（白名单设置 UI：checkbox 多选模型）
+- [x] 异步操作"受理成功 + 轮询"反馈统一（部署向导跳详情页轮询状态）
 
 ---
 

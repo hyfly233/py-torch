@@ -1,0 +1,94 @@
+# 租户隔离部署清单（R2-4）：Namespace + RBAC + ResourceQuota + NetworkPolicy
+# 生产化基线：每个租户一个 namespace（tenant-<id>），默认拒绝跨租户流量。
+
+# 1. 租户命名空间（示例：tenant-default）
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tenant-default
+  labels:
+    carrot.ai/tenant: "true"
+    carrot.ai/tenant-id: "default"
+---
+# 2. ResourceQuota：每租户 GPU/内存/CPU 配额
+# 注意：GPU 配额需要 GPU Operator 注册 nvidia.com/gpu 资源后生效
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: tenant-quota
+  namespace: tenant-default
+spec:
+  hard:
+    requests.nvidia.com/gpu: "16"
+    limits.nvidia.com/gpu: "16"
+    requests.cpu: "64"
+    limits.cpu: "128"
+    requests.memory: "256Gi"
+    limits.memory: "512Gi"
+    persistentvolumeclaims: "10"
+---
+# 3. NetworkPolicy：租户内默认拒绝 + 仅允许同租户通信
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tenant-default-deny-all
+  namespace: tenant-default
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# 4. NetworkPolicy：允许同租户内 Pod 互访（模型服务间调用）
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tenant-default-allow-same
+  namespace: tenant-default
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              carrot.ai/tenant-id: "default"
+---
+# 5. RBAC：k8sadapter 使用的最小权限 ServiceAccount
+# 生产环境由控制面按租户创建 Role/RoleBinding，此处为参考
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: carrot-tenant-operator
+  namespace: tenant-default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: carrot-tenant-operator
+  namespace: tenant-default
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "deployments/scale"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["services", "pods", "events", "secrets", "configmaps", "resourcequotas"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: carrot-tenant-operator
+  namespace: tenant-default
+subjects:
+  - kind: ServiceAccount
+    name: carrot-tenant-operator
+    namespace: tenant-default
+roleRef:
+  kind: Role
+  name: carrot-tenant-operator
+  apiGroup: rbac.authorization.k8s.io

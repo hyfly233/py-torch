@@ -1,0 +1,42 @@
+# DCGM Exporter DaemonSet（R2-3：GPU 指标采集）
+# 在 GPU 节点上采集 dcgm_gpu_utilization / dcgm_fb_used / dcgm_gpu_temp 等指标
+# Prometheus 通过 /metrics 端点抓取
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: dcgm-exporter
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: dcgm-exporter
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: dcgm-exporter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: dcgm-exporter
+    spec:
+      # 仅调度到 GPU 节点
+      nodeSelector:
+        nvidia.com/gpu.present: "true"
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: dcgm-exporter
+          image: nvcr.io/nvidia/k8s/dcgm-exporter:3.3.5-3.4.0-ubuntu22.04
+          ports:
+            - name: metrics
+              containerPort: 9400
+          securityContext:
+            runAsNonRoot: false
+          volumeMounts:
+            - name: dcgm
+              mountPath: /run/prometheus
+              mountPropagation: HostToContainer
+      volumes:
+        - name: dcgm
+          hostPath:
+            path: /run/prometheus

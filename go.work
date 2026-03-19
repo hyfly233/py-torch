@@ -3,10 +3,11 @@ go 1.26
 
 use (
 	./lib
-	./services/controlplane
-	./services/gateway
-	./services/inference
-	./services/k8sadapter
 	./services/modelregistry
+	./services/k8sadapter
+	./services/controlplane
+	./services/inference
+	./services/gateway
 	./services/observability
+	./services/pipeline
 )
