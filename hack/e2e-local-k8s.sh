@@ -29,6 +29,9 @@ kubectl get ns "$NS" >/dev/null 2>&1 || kubectl create ns "$NS"
 docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "请先构建镜像: docker build -f services/inference/Dockerfile -t $IMAGE ."
 # Docker Desktop 集群可直接使用本地镜像
 kubectl -n "$NS" get deploy 2>/dev/null | grep -q qwen-demo && kubectl -n "$NS" delete deploy qwen-demo --wait || true
+kubectl -n "$NS" get svc 2>/dev/null | grep -q qwen-demo && kubectl -n "$NS" delete svc qwen-demo || true
+# 清理残留 port-forward
+lsof -ti :18080 >/dev/null 2>&1 && lsof -ti :18080 | xargs kill 2>/dev/null || true
 
 # ---------- 2. 启动控制面服务（本地二进制） ----------
 # 预编译：hack/e2e-local-k8s.sh 之前先执行 hack/build-binaries.sh
@@ -110,10 +113,19 @@ kubectl -n "$NS" get deploy,pods -l carrot.ai/deployment-id="$DEPLOY_ID" 2>/dev/
   kubectl -n "$NS" get deploy,pods -l app=qwen-demo
 
 # ---------- 8. 配置 gateway 路由 ----------
-log "7.1 注册 gateway 路由"
-# 模型服务在 K8s 内部：qwen-demo.<ns>.svc.cluster.local:80
+log "7.1 port-forward 暴露模型服务 + 注册 gateway 路由"
+# 网关在宿主机运行，无法解析 K8s 内部 DNS；用 port-forward 暴露到宿主机
+kubectl -n "$NS" port-forward svc/qwen-demo 18080:80 >/tmp/pf-qwen-demo.log 2>&1 &
+PF_PID=$!
+PIDS+=($PF_PID)
+# 等待 port-forward 就绪
+for i in $(seq 1 20); do
+  curl -sf http://127.0.0.1:18080/health >/dev/null 2>&1 && break
+  sleep 1
+done
 curl -s -X POST http://127.0.0.1:8083/internal/routes -H 'Content-Type: application/json' \
-  -d "{\"model\":\"qwen-demo\",\"endpoint\":\"http://qwen-demo.$NS.svc.cluster.local:80\",\"tenantId\":\"default\",\"deploymentId\":\"$DEPLOY_ID\"}" >/dev/null
+  -d "{\"model\":\"qwen-demo\",\"endpoint\":\"http://127.0.0.1:18080\",\"tenantId\":\"default\",\"deploymentId\":\"$DEPLOY_ID\"}" >/dev/null
+log "路由已注册: qwen-demo → http://127.0.0.1:18080"
 
 log "7.2 创建 API Key"
 KEY_JSON=$(curl -s -X POST http://127.0.0.1:8083/api/v1/keys -H 'Content-Type: application/json' -d '{"tenantId":"default"}')

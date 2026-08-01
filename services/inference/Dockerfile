@@ -19,4 +19,5 @@ RUN sed -i 's|dl-cdn.alpinelinux.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apk/re
     && apk add --no-cache ca-certificates tzdata
 COPY --from=build /bin/inference /usr/local/bin/inference
 EXPOSE 8000
-ENTRYPOINT ["/usr/local/bin/inference", "--addr", ":8000"]
+# "*" 通配模式：mock 响应任意模型名（验证链路用；生产替换为真实 vLLM）
+ENTRYPOINT ["/usr/local/bin/inference", "--addr", ":8000", "--model", "*"]

@@ -91,15 +91,15 @@ func TestChatStream(t *testing.T) {
 	}
 }
 
-// 模型不存在
-func TestModelNotFound(t *testing.T) {
+// 任意模型名均可响应（Mock 不校验模型名，链路验证用）
+func TestUnknownModelAccepted(t *testing.T) {
 	h := newTestSrv(t)
-	body := `{"model":"unknown","messages":[{"role":"user","content":"hi"}]}`
+	body := `{"model":"unknown-model","messages":[{"role":"user","content":"hi"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("未知模型应返回 404: %d", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Mock 应接受任意模型名: %d %s", rec.Code, rec.Body.String())
 	}
 }
 

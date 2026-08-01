@@ -24,3 +24,5 @@ data/
 
 *.pth
 uv.lock
+
+go.work.sum

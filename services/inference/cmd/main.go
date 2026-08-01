@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -18,6 +19,12 @@ func main() {
 	addr := flag.String("addr", ":8085", "监听地址")
 	model := flag.String("model", "qwen-demo", "模拟的模型名（与部署服务名一致）")
 	flag.Parse()
+
+	// 兼容 renderer 传入的 --model /models/<name> 路径形式：取 basename 作为模型名
+	if strings.HasPrefix(*model, "/") {
+		parts := strings.Split(strings.Trim(*model, "/"), "/")
+		*model = parts[len(parts)-1]
+	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	srv := server.NewServer(logger, *model)

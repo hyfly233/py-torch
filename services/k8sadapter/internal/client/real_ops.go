@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"time"
 
 	"kk-infra/lib/domain"
@@ -153,9 +152,6 @@ func (c *RealKubeClient) CreateDeployment(ctx context.Context, spec *DeploymentS
 	if err != nil {
 		return nil, err
 	}
-	if b, jerr := json.Marshal(res.Deployment); jerr == nil {
-		fmt.Fprintf(os.Stderr, "[debug] deployment manifest: %s\n", b)
-	}
 
 	// 幂等：已存在则直接返回状态
 	if _, err := c.GetDeployment(ctx, spec.Name, ns); err == nil {
@@ -240,7 +236,7 @@ func (c *RealKubeClient) GetDeployment(ctx context.Context, name, namespace stri
 	}, nil
 }
 
-// ScaleDeployment 更新副本数
+// ScaleDeployment 更新副本数（merge patch）
 func (c *RealKubeClient) ScaleDeployment(ctx context.Context, name, namespace string, replicas int32) (*DeploymentResult, error) {
 	ns := namespace
 	if ns == "" {
@@ -251,17 +247,8 @@ func (c *RealKubeClient) ScaleDeployment(ctx context.Context, name, namespace st
 			"replicas": replicas,
 		},
 	}
-	if err := c.do(ctx, "PATCH", "/apis/apps/v1/namespaces/"+ns+"/deployments/"+name,
-		[]interface{}{map[string]interface{}{
-			"op":    "replace",
-			"path":  "/spec/replicas",
-			"value": replicas,
-		}}, nil); err != nil {
-		_ = err
-		// 降级：部分集群不支持 JSON Patch 时用 merge patch
-		if err2 := c.do(ctx, "PATCH", "/apis/apps/v1/namespaces/"+ns+"/deployments/"+name, patch, nil); err2 != nil {
-			return nil, fmt.Errorf("扩缩容失败: %w", err2)
-		}
+	if err := c.do(ctx, "PATCH", "/apis/apps/v1/namespaces/"+ns+"/deployments/"+name, patch, nil); err != nil {
+		return nil, fmt.Errorf("扩缩容失败: %w", err)
 	}
 	return c.GetDeployment(ctx, name, ns)
 }

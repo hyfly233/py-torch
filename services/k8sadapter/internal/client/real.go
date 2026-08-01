@@ -181,14 +181,16 @@ func (c *RealKubeClient) do(ctx context.Context, method, path string, body inter
 			return fmt.Errorf("序列化请求失败: %w", err)
 		}
 	}
-	if method == "POST" && strings.Contains(path, "/deployments") {
-		fmt.Fprintf(os.Stderr, "[debug] POST body: %s\n", buf.String()[:min(len(buf.String()), 1200)])
-	}
 	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, &buf)
 	if err != nil {
 		return fmt.Errorf("构造请求失败: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
+	// PATCH 请求需要正确的 Content-Type（K8s 校验 media type）
+	if method == "PATCH" {
+		req.Header.Set("Content-Type", "application/merge-patch+json")
+	} else {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	req.Header.Set("Accept", "application/json")
 	// 认证：bearer token（kubeconfig 中）
 	if c.token != "" {

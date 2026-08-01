@@ -120,10 +120,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求体解析失败: " + err.Error()})
 		return
 	}
-	if req.Model != s.model {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "模型不存在: " + req.Model})
-		return
-	}
+	// Mock 服务不校验模型名：验证链路用，任意模型名都响应
+	// （生产环境由真实 vLLM 做模型名校验）
 	// 取最后一条用户消息作为回复内容
 	content := "你好，我是 " + s.model + " 模型。"
 	for i := len(req.Messages) - 1; i >= 0; i-- {
